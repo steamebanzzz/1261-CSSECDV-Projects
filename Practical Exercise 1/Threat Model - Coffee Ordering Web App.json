@@ -37,29 +37,29 @@
             "connector": "smooth",
             "data": {
               "type": "tm.Boundary",
-              "name": "Trust Boundary",
-              "description": "",
+              "name": "Customer Backend\nDatabase Boundary",
+              "description": "Separates the web application server from the MongoDB database. Database access should be restricted to the application server and use an authenticated, protected connection.",
               "isTrustBoundary": true,
               "hasOpenThreats": false,
               "crossingFlows": [],
               "containedElements": []
             },
             "labels": [
-              "Trust Boundary"
+              "Customer Backend\nDatabase Boundary"
             ],
-            "id": "002b882d-fc71-4931-ba08-15639bfc20ef",
+            "id": "6215d3a0-f997-4f7d-92a4-f3752f19ca10",
             "source": {
-              "x": 330,
-              "y": 50
+              "x": 960,
+              "y": 140
             },
             "target": {
-              "x": 560,
-              "y": 50
+              "x": 980,
+              "y": 370
             },
             "vertices": [
               {
-                "x": 440,
-                "y": 80
+                "x": 840,
+                "y": 250
               }
             ]
           },
@@ -71,7 +71,7 @@
             "connector": "smooth",
             "data": {
               "type": "tm.Boundary",
-              "name": "Trust Boundary",
+              "name": "Payment Gateway Communication Boundary",
               "description": "",
               "isTrustBoundary": true,
               "hasOpenThreats": false,
@@ -79,21 +79,248 @@
               "containedElements": []
             },
             "labels": [
-              "Trust Boundary"
+              "Payment Gateway Communication Boundary"
             ],
-            "id": "b3dc51e4-55b8-49f1-8f2f-7638f4b6408e",
+            "id": "002b882d-fc71-4931-ba08-15639bfc20ef",
             "source": {
-              "x": 450,
-              "y": 450
+              "x": 440,
+              "y": 20
             },
             "target": {
-              "x": 450,
-              "y": 760
+              "x": 650,
+              "y": 10
             },
             "vertices": [
               {
-                "x": 420,
-                "y": 610
+                "x": 550,
+                "y": 60
+              }
+            ]
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": -1,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Barista Backend\nDatabase Boundary",
+              "description": "Separates the web application server from the MongoDB database. Database access should be restricted to the application server and use an authenticated, protected connection.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [],
+              "containedElements": []
+            },
+            "labels": [
+              "Barista Backend\nDatabase Boundary"
+            ],
+            "id": "af920eaa-c908-4f6c-88eb-7c96b2200996",
+            "source": {
+              "x": 960,
+              "y": 500
+            },
+            "target": {
+              "x": 970,
+              "y": 720
+            },
+            "vertices": [
+              {
+                "x": 850,
+                "y": 620
+              }
+            ]
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": -1,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Manager Backend\nDatabase Boundary",
+              "description": "Separates the web application server from the MongoDB database. Database access should be restricted to the application server and use an authenticated, protected connection.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [],
+              "containedElements": []
+            },
+            "labels": [
+              "Manager Backend\nDatabase Boundary"
+            ],
+            "id": "aaad58db-0944-4bf5-9fd0-88c6d8e45289",
+            "source": {
+              "x": 790,
+              "y": 960
+            },
+            "target": {
+              "x": 800,
+              "y": 1110
+            },
+            "vertices": [
+              {
+                "x": 720,
+                "y": 1040
+              }
+            ],
+            "tools": {
+              "items": [
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead",
+                "boundary",
+                "button-remove",
+                "vertices",
+                "source-arrowhead",
+                "target-arrowhead"
+              ],
+              "name": null
+            }
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": -1,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Administrator Backend\nDatabase Boundary",
+              "description": "Separates the web application server from the MongoDB database. Database access should be restricted to the application server and use an authenticated, protected connection.",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [],
+              "containedElements": []
+            },
+            "labels": [
+              "Administrator Backend\nDatabase Boundary"
+            ],
+            "id": "ff2eb251-d209-4662-8fb8-6636f748f9f6",
+            "source": {
+              "x": 800,
+              "y": 1380
+            },
+            "target": {
+              "x": 800,
+              "y": 1550
+            },
+            "vertices": [
+              {
+                "x": 720,
+                "y": 1460
               }
             ]
           },
@@ -267,7 +494,7 @@
           },
           {
             "position": {
-              "x": 390,
+              "x": 496.25,
               "y": 205
             },
             "size": {
@@ -512,6 +739,19 @@
                   "new": false,
                   "number": 17,
                   "score": "6"
+                },
+                {
+                  "id": "732083e7-9b20-413d-80f7-e018c90cec7b",
+                  "title": "MongoDB Database DoS",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
+                  "modelType": "default",
+                  "new": false,
+                  "number": 74,
+                  "score": "2"
                 }
               ]
             }
@@ -563,7 +803,7 @@
             },
             "vertices": [
               {
-                "x": 270,
+                "x": 300,
                 "y": 190
               }
             ]
@@ -615,8 +855,8 @@
             },
             "vertices": [
               {
-                "x": 270,
-                "y": 320
+                "x": 310,
+                "y": 310
               }
             ]
           },
@@ -667,8 +907,8 @@
             },
             "vertices": [
               {
-                "x": 590,
-                "y": 200
+                "x": 800,
+                "y": 170
               }
             ]
           },
@@ -719,8 +959,8 @@
             },
             "vertices": [
               {
-                "x": 590,
-                "y": 310
+                "x": 800,
+                "y": 330
               }
             ]
           },
@@ -745,15 +985,15 @@
             "data": {
               "type": "tm.Flow",
               "name": "Payment Request",
-              "description": "",
+              "description": "Backend sends tokenized payment information to the payment gateway over an encrypted HTTPS/TLS connection.",
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
               "hasOpenThreats": false,
               "isBidirectional": false,
-              "isEncrypted": false,
+              "isEncrypted": true,
               "isPublicNetwork": false,
-              "protocol": "",
+              "protocol": "HTTPS/TLS",
               "threats": [],
               "trustBoundaryIds": []
             },
@@ -771,7 +1011,7 @@
             },
             "vertices": [
               {
-                "x": 540,
+                "x": 660,
                 "y": 110
               }
             ]
@@ -797,15 +1037,15 @@
             "data": {
               "type": "tm.Flow",
               "name": "Transaction Response",
-              "description": "",
+              "description": "Payment gateway returns the transaction response to the backend over an encrypted HTTPS/TLS connection.",
               "outOfScope": false,
               "isTrustBoundary": false,
               "reasonOutOfScope": "",
               "hasOpenThreats": false,
               "isBidirectional": false,
-              "isEncrypted": false,
+              "isEncrypted": true,
               "isPublicNetwork": false,
-              "protocol": "",
+              "protocol": "HTTPS/TLS",
               "threats": [],
               "trustBoundaryIds": []
             },
@@ -823,7 +1063,7 @@
             },
             "vertices": [
               {
-                "x": 330,
+                "x": 430,
                 "y": 110
               }
             ]
@@ -1083,8 +1323,8 @@
             },
             "vertices": [
               {
-                "x": 710,
-                "y": 530
+                "x": 810,
+                "y": 500
               }
             ]
           },
@@ -1133,7 +1373,12 @@
               "cell": "1af42d2f-ad54-4775-acc6-5f1c88bae14e",
               "port": "d212f5c1-fac8-4ffc-baf0-df461c44518b"
             },
-            "vertices": []
+            "vertices": [
+              {
+                "x": 810,
+                "y": 570
+              }
+            ]
           },
           {
             "shape": "flow",
@@ -1182,8 +1427,8 @@
             },
             "vertices": [
               {
-                "x": 710,
-                "y": 700
+                "x": 800,
+                "y": 740
               }
             ]
           },
@@ -1232,7 +1477,12 @@
               "cell": "1af42d2f-ad54-4775-acc6-5f1c88bae14e",
               "port": "f6e38d5f-e629-49ab-b5da-68934fb7b704"
             },
-            "vertices": []
+            "vertices": [
+              {
+                "x": 330,
+                "y": 580
+              }
+            ]
           },
           {
             "shape": "flow",
@@ -1866,7 +2116,7 @@
             "connector": "smooth",
             "data": {
               "type": "tm.Boundary",
-              "name": "Trust Boundary",
+              "name": "Customer Frontend\nBackend Boundary",
               "description": "",
               "isTrustBoundary": true,
               "hasOpenThreats": false,
@@ -1874,27 +2124,27 @@
               "containedElements": []
             },
             "labels": [
-              "Trust Boundary"
+              "Customer Frontend\nBackend Boundary"
             ],
             "id": "22d9df22-022d-44a9-a076-fce1be0ed876",
             "source": {
-              "x": 350,
-              "y": 190
+              "x": 400,
+              "y": 180
             },
             "target": {
-              "x": 350,
+              "x": 400,
               "y": 320
             },
             "vertices": [
               {
-                "x": 320,
-                "y": 260
+                "x": 330,
+                "y": 250
               }
             ]
           },
           {
             "position": {
-              "x": 687,
+              "x": 1017,
               "y": 220
             },
             "size": {
@@ -2047,8 +2297,8 @@
                   "title": "Fraudulent Order Repudiation",
                   "status": "Open",
                   "severity": "Medium",
-                  "type": "Tampering",
-                  "description": "A customer could deny placing an order if insufficient logging and nonrepudiation controls are in place",
+                  "type": "Repudiation",
+                  "description": "A customer could deny placing an order if insufficient logging and nonrepudiation controls are in place.",
                   "mitigation": "Provide remediation for this threat or a reason if status is N/A",
                   "modelType": "default",
                   "new": false,
@@ -2075,7 +2325,7 @@
                   "severity": "Low",
                   "type": "Denial of service",
                   "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
-                  "mitigation": "Provide remediation for this threat or a reason if status is N/A",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
                   "modelType": "default",
                   "new": false,
                   "number": 15,
@@ -2086,8 +2336,8 @@
           },
           {
             "position": {
-              "x": 383.75,
-              "y": -37
+              "x": 490,
+              "y": -47
             },
             "size": {
               "width": 112.5,
@@ -2629,13 +2879,26 @@
                   "new": false,
                   "number": 35,
                   "score": "6"
+                },
+                {
+                  "id": "fc8ea906-fab2-4ad6-bae9-f9be9750af29",
+                  "title": "MongoDB Database DoS",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
+                  "modelType": "default",
+                  "new": false,
+                  "number": 75,
+                  "score": "2"
                 }
               ]
             }
           },
           {
             "position": {
-              "x": 817,
+              "x": 1027,
               "y": 587
             },
             "size": {
@@ -2815,8 +3078,8 @@
                   "status": "Open",
                   "severity": "Low",
                   "type": "Denial of service",
-                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive",
-                  "mitigation": "Provide remediation for this threat or a reason if status is N/A",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
                   "modelType": "default",
                   "new": false,
                   "number": 33,
@@ -3266,6 +3529,19 @@
                   "new": false,
                   "number": 55,
                   "score": "6"
+                },
+                {
+                  "id": "09b77c76-7843-4c70-b760-a4526acf7026",
+                  "title": "MongoDB Database DoS",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
+                  "modelType": "default",
+                  "new": false,
+                  "number": 76,
+                  "score": "2"
                 }
               ]
             }
@@ -3466,7 +3742,7 @@
                   "severity": "Low",
                   "type": "Denial of service",
                   "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
-                  "mitigation": "Provide remediation for this threat or a reason if status is N/A",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
                   "modelType": "default",
                   "new": false,
                   "number": 52,
@@ -3483,7 +3759,7 @@
             "connector": "smooth",
             "data": {
               "type": "tm.Boundary",
-              "name": "Trust Boundary",
+              "name": "Manager Frontend\nBackend Boundary",
               "description": "",
               "isTrustBoundary": true,
               "hasOpenThreats": false,
@@ -3491,7 +3767,7 @@
               "containedElements": []
             },
             "labels": [
-              "Trust Boundary"
+              "Manager Frontend\nBackend Boundary"
             ],
             "id": "f2286a25-0126-4e91-984a-bd5e0421f9b5",
             "source": {
@@ -3905,8 +4181,8 @@
                   "status": "Open",
                   "severity": "Low",
                   "type": "Denial of service",
-                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.\n",
-                  "mitigation": "Provide remediation for this threat or a reason if status is N/A",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
                   "modelType": "default",
                   "new": false,
                   "number": 70,
@@ -4129,6 +4405,19 @@
                   "new": false,
                   "number": 71,
                   "score": "2"
+                },
+                {
+                  "id": "170a819d-a223-4839-960e-c4c0a597b558",
+                  "title": "MongoDB Database DoS",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "description": "Malicious or poorly optimized queries could overload the database, making it unresponsive.",
+                  "mitigation": "Apply query timeouts and rate limits, optimize and index queries, monitor database resource usage, and restrict database access to the application server.",
+                  "modelType": "default",
+                  "new": false,
+                  "number": 77,
+                  "score": "2"
                 }
               ]
             }
@@ -4141,7 +4430,7 @@
             "connector": "smooth",
             "data": {
               "type": "tm.Boundary",
-              "name": "Trust Boundary",
+              "name": "Administrator Frontend\nBackend Boundary",
               "description": "",
               "isTrustBoundary": true,
               "hasOpenThreats": false,
@@ -4149,21 +4438,55 @@
               "containedElements": []
             },
             "labels": [
-              "Trust Boundary"
+              "Administrator Frontend\nBackend Boundary"
             ],
             "id": "2830abe1-bb24-492f-80a1-75d155608d9b",
             "source": {
-              "x": 470,
+              "x": 490,
               "y": 1370
             },
             "target": {
-              "x": 470,
-              "y": 1550
+              "x": 490,
+              "y": 1560
             },
             "vertices": [
               {
-                "x": 430,
-                "y": 1470
+                "x": 390,
+                "y": 1460
+              }
+            ]
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": 28,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Customer \nWorkflow \nBoundary",
+              "description": "",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [],
+              "containedElements": []
+            },
+            "labels": [
+              "Customer \nWorkflow \nBoundary"
+            ],
+            "id": "b3dc51e4-55b8-49f1-8f2f-7638f4b6408e",
+            "source": {
+              "x": 450,
+              "y": 450
+            },
+            "target": {
+              "x": 490,
+              "y": 720
+            },
+            "vertices": [
+              {
+                "x": 410,
+                "y": 620
               }
             ]
           }
