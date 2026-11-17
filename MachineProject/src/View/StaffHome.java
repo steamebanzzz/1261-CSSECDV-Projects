@@ -37,6 +37,10 @@ public class StaffHome extends javax.swing.JPanel {
         mgmtLogs = new MgmtLogs(sqlite);
         mgmtProduct = new MgmtProduct(sqlite);
         mgmtUser = new MgmtUser(sqlite);
+        mgmtProduct.setAccessRole(3);
+        usersBtn.setVisible(false);
+        historyBtn.setVisible(false);
+        logsBtn.setVisible(false);
     
         Content.setLayout(contentView);
         Content.add(new Home("WELCOME STAFF!", new java.awt.Color(0,204,102)), "home");
