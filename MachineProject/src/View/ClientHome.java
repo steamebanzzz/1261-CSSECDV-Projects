@@ -37,6 +37,9 @@ public class ClientHome extends javax.swing.JPanel {
         mgmtLogs = new MgmtLogs(sqlite);
         mgmtProduct = new MgmtProduct(sqlite);
         mgmtUser = new MgmtUser(sqlite);
+        mgmtProduct.setAccessRole(2);
+        usersBtn.setVisible(false);
+        logsBtn.setVisible(false);
     
         Content.setLayout(contentView);
         Content.add(new Home("WELCOME CLIENT!", new java.awt.Color(255,102,51)), "home");
