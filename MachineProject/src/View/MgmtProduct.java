@@ -6,6 +6,7 @@
 package View;
 
 import Controller.SQLite;
+import Controller.AppException;
 import Model.Product;
 import java.util.ArrayList;
 import javax.swing.JOptionPane;
@@ -49,6 +50,14 @@ public class MgmtProduct extends javax.swing.JPanel {
                 products.get(nCtr).getStock(), 
                 products.get(nCtr).getPrice()});
         }
+    }
+
+    public void setAccessRole(int role) {
+        boolean canManageProducts = role == 3 || role == 4 || role == 5;
+        purchaseBtn.setVisible(role == 2);
+        addBtn.setVisible(canManageProducts);
+        editBtn.setVisible(canManageProducts);
+        deleteBtn.setVisible(canManageProducts);
     }
     
     public void designer(JTextField component, String text){
@@ -175,17 +184,37 @@ public class MgmtProduct extends javax.swing.JPanel {
 
     private void purchaseBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_purchaseBtnActionPerformed
         if(table.getSelectedRow() >= 0){
-            JTextField stockFld = new JTextField("0");
+            int row = table.convertRowIndexToModel(table.getSelectedRow());
+            String name = tableModel.getValueAt(row, 0).toString();
+            JTextField stockFld = new JTextField("1");
             designer(stockFld, "PRODUCT STOCK");
 
             Object[] message = {
-                "How many " + tableModel.getValueAt(table.getSelectedRow(), 0) + " do you want to purchase?", stockFld
+                "How many " + name + " do you want to purchase?", stockFld
             };
 
             int result = JOptionPane.showConfirmDialog(null, message, "PURCHASE PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
             if (result == JOptionPane.OK_OPTION) {
-                System.out.println(stockFld.getText());
+                try {
+                    long totalCents =
+                            sqlite.purchaseProduct(name, stockFld.getText());
+                    init();
+                    JOptionPane.showMessageDialog(
+                            this,
+                            "Purchase completed. Total: "
+                            + java.math.BigDecimal.valueOf(
+                                    totalCents, 2).toPlainString());
+                } catch (IllegalArgumentException
+                        | AppException | SecurityException ex) {
+                    if (ex instanceof AppException
+                            && ((AppException) ex).isFatal()) {
+                        return;
+                    }
+                    JOptionPane.showMessageDialog(
+                            this, ex.getMessage(), "Purchase failed",
+                            JOptionPane.ERROR_MESSAGE);
+                }
             }
         }
     }//GEN-LAST:event_purchaseBtnActionPerformed
@@ -206,17 +235,32 @@ public class MgmtProduct extends javax.swing.JPanel {
         int result = JOptionPane.showConfirmDialog(null, message, "ADD PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
         if (result == JOptionPane.OK_OPTION) {
-            System.out.println(nameFld.getText());
-            System.out.println(stockFld.getText());
-            System.out.println(priceFld.getText());
+            try {
+                sqlite.addProduct(
+                        nameFld.getText(),
+                        stockFld.getText(),
+                        priceFld.getText());
+                init();
+            } catch (IllegalArgumentException
+                    | AppException | SecurityException ex) {
+                if (ex instanceof AppException
+                        && ((AppException) ex).isFatal()) {
+                    return;
+                }
+                JOptionPane.showMessageDialog(
+                        this, ex.getMessage(), "Product could not be added",
+                        JOptionPane.ERROR_MESSAGE);
+            }
         }
     }//GEN-LAST:event_addBtnActionPerformed
 
     private void editBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_editBtnActionPerformed
         if(table.getSelectedRow() >= 0){
-            JTextField nameFld = new JTextField(tableModel.getValueAt(table.getSelectedRow(), 0) + "");
-            JTextField stockFld = new JTextField(tableModel.getValueAt(table.getSelectedRow(), 1) + "");
-            JTextField priceFld = new JTextField(tableModel.getValueAt(table.getSelectedRow(), 2) + "");
+            int row = table.convertRowIndexToModel(table.getSelectedRow());
+            String originalName = tableModel.getValueAt(row, 0).toString();
+            JTextField nameFld = new JTextField(originalName);
+            JTextField stockFld = new JTextField(tableModel.getValueAt(row, 1) + "");
+            JTextField priceFld = new JTextField(tableModel.getValueAt(row, 2) + "");
 
             designer(nameFld, "PRODUCT NAME");
             designer(stockFld, "PRODUCT STOCK");
@@ -229,19 +273,47 @@ public class MgmtProduct extends javax.swing.JPanel {
             int result = JOptionPane.showConfirmDialog(null, message, "EDIT PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
             if (result == JOptionPane.OK_OPTION) {
-                System.out.println(nameFld.getText());
-                System.out.println(stockFld.getText());
-                System.out.println(priceFld.getText());
+                try {
+                    sqlite.updateProduct(
+                            originalName, nameFld.getText(),
+                            stockFld.getText(), priceFld.getText());
+                    init();
+                } catch (IllegalArgumentException
+                        | AppException | SecurityException ex) {
+                    if (ex instanceof AppException
+                            && ((AppException) ex).isFatal()) {
+                        return;
+                    }
+                    JOptionPane.showMessageDialog(
+                            this, ex.getMessage(),
+                            "Product could not be edited",
+                            JOptionPane.ERROR_MESSAGE);
+                }
             }
         }
     }//GEN-LAST:event_editBtnActionPerformed
 
     private void deleteBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_deleteBtnActionPerformed
         if(table.getSelectedRow() >= 0){
-            int result = JOptionPane.showConfirmDialog(null, "Are you sure you want to delete " + tableModel.getValueAt(table.getSelectedRow(), 0) + "?", "DELETE PRODUCT", JOptionPane.YES_NO_OPTION);
+            int row = table.convertRowIndexToModel(table.getSelectedRow());
+            String name = tableModel.getValueAt(row, 0).toString();
+            int result = JOptionPane.showConfirmDialog(null, "Are you sure you want to delete " + name + "?", "DELETE PRODUCT", JOptionPane.YES_NO_OPTION);
             
             if (result == JOptionPane.YES_OPTION) {
-                System.out.println(tableModel.getValueAt(table.getSelectedRow(), 0));
+                try {
+                    sqlite.deleteProduct(name);
+                    init();
+                } catch (IllegalArgumentException
+                        | AppException | SecurityException ex) {
+                    if (ex instanceof AppException
+                            && ((AppException) ex).isFatal()) {
+                        return;
+                    }
+                    JOptionPane.showMessageDialog(
+                            this, ex.getMessage(),
+                            "Product could not be deleted",
+                            JOptionPane.ERROR_MESSAGE);
+                }
             }
         }
     }//GEN-LAST:event_deleteBtnActionPerformed
