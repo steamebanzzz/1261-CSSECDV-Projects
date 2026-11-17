@@ -1,9 +1,13 @@
 package View;
 
+import Controller.AppException;
 import Controller.Main;
+import Model.LoginResult;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
+import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import javax.swing.WindowConstants;
 
 public class Frame extends javax.swing.JFrame {
@@ -180,27 +184,37 @@ public class Frame extends javax.swing.JFrame {
     }// </editor-fold>//GEN-END:initComponents
 
     private void adminBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_adminBtnActionPerformed
-        adminHomePnl.showPnl("home");
-        contentView.show(Content, "adminHomePnl");
+        showRoleDashboard(5, adminHomePnl, "adminHomePnl");
     }//GEN-LAST:event_adminBtnActionPerformed
 
     private void managerBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_managerBtnActionPerformed
-        managerHomePnl.showPnl("home");
-        contentView.show(Content, "managerHomePnl");
+        showRoleDashboard(4, managerHomePnl, "managerHomePnl");
     }//GEN-LAST:event_managerBtnActionPerformed
 
     private void staffBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_staffBtnActionPerformed
-        staffHomePnl.showPnl("home");
-        contentView.show(Content, "staffHomePnl");
+        showRoleDashboard(3, staffHomePnl, "staffHomePnl");
     }//GEN-LAST:event_staffBtnActionPerformed
 
     private void clientBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_clientBtnActionPerformed
-        clientHomePnl.showPnl("home");
-        contentView.show(Content, "clientHomePnl");
+        showRoleDashboard(2, clientHomePnl, "clientHomePnl");
     }//GEN-LAST:event_clientBtnActionPerformed
 
     private void logoutBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_logoutBtnActionPerformed
-        frameView.show(Container, "loginPnl");
+        try {
+            main.sqlite.logout();
+        } catch (AppException ex) {
+            if (!ex.isFatal()) {
+                javax.swing.JOptionPane.showMessageDialog(
+                        this, "Logout completed, but the security event "
+                        + "could not be recorded.",
+                        "Logout warning",
+                        javax.swing.JOptionPane.WARNING_MESSAGE);
+            }
+        } finally {
+            loginPnl.clearCredentials();
+            setRoleNavigation(0);
+            frameView.show(Container, "loginPnl");
+        }
     }//GEN-LAST:event_logoutBtnActionPerformed
 
     public Main main;
@@ -221,8 +235,11 @@ public class Frame extends javax.swing.JFrame {
         this.setLocationRelativeTo(null);
         
         this.main = controller;
+        main.sqlite.setFatalErrorHandler(
+                () -> SwingUtilities.invokeLater(this::handleFatalError));
         loginPnl.frame = this;
         registerPnl.frame = this;
+        setRoleNavigation(0);
         
         adminHomePnl.init(main.sqlite);
         clientHomePnl.init(main.sqlite);
@@ -243,21 +260,95 @@ public class Frame extends javax.swing.JFrame {
         
         this.setVisible(true);
     }
+
+    private void handleFatalError() {
+        main.sqlite.invalidateSession();
+        loginPnl.clearCredentials();
+        setRoleNavigation(0);
+        frameView.show(Container, "loginPnl");
+        javax.swing.JOptionPane.showMessageDialog(
+                this,
+                "A system error occurred. Please sign in again.",
+                "Session ended",
+                javax.swing.JOptionPane.ERROR_MESSAGE);
+    }
     
     public void mainNav(){
+        int role = main.sqlite.getAuthenticatedRole();
+        if (role < 2 || role > 5) {
+            setRoleNavigation(0);
+            frameView.show(Container, "loginPnl");
+            return;
+        }
+
+        setRoleNavigation(role);
         frameView.show(Container, "homePnl");
+        if (role == 5) {
+            showRoleDashboard(5, adminHomePnl, "adminHomePnl");
+        } else if (role == 4) {
+            showRoleDashboard(4, managerHomePnl, "managerHomePnl");
+        } else if (role == 3) {
+            showRoleDashboard(3, staffHomePnl, "staffHomePnl");
+        } else {
+            showRoleDashboard(2, clientHomePnl, "clientHomePnl");
+        }
+    }
+
+    private void setRoleNavigation(int role) {
+        adminBtn.setVisible(role == 5);
+        managerBtn.setVisible(role == 4);
+        staffBtn.setVisible(role == 3);
+        clientBtn.setVisible(role == 2);
+        logoutBtn.setVisible(role >= 2 && role <= 5);
+    }
+
+    private void showRoleDashboard(
+            int role, JPanel dashboard, String cardName) {
+
+        if (main.sqlite.getAuthenticatedRole() != role) {
+            mainNav();
+            return;
+        }
+
+        if (dashboard == adminHomePnl) {
+            adminHomePnl.showPnl("home");
+        } else if (dashboard == managerHomePnl) {
+            managerHomePnl.showPnl("home");
+        } else if (dashboard == staffHomePnl) {
+            staffHomePnl.showPnl("home");
+        } else if (dashboard == clientHomePnl) {
+            clientHomePnl.showPnl("home");
+        }
+        contentView.show(Content, cardName);
     }
     
     public void loginNav(){
+        if (main != null && main.sqlite.getAuthenticatedRole() != 0) {
+            mainNav();
+            return;
+        }
         frameView.show(Container, "loginPnl");
     }
     
     public void registerNav(){
+        if (main.sqlite.getAuthenticatedRole() != 0) {
+            mainNav();
+            return;
+        }
         frameView.show(Container, "registerPnl");
     }
     
-    public void registerAction(String username, String password, String confpass){
-        main.sqlite.addUser(username, password);
+    public LoginResult loginAction(String username, char[] password) {
+        LoginResult result = main.sqlite.login(username, password);
+        if (result.isSuccessful()) {
+            mainNav();
+        }
+        return result;
+    }
+
+    public void registerAction(
+            String username, char[] password, char[] confirmation) {
+        main.sqlite.addUser(username, password, confirmation);
     }
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
