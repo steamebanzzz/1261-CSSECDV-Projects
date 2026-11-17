@@ -5,6 +5,7 @@
  */
 package View;
 
+import Controller.AppException;
 import Controller.SQLite;
 import Model.Logs;
 import java.util.ArrayList;
@@ -135,7 +136,25 @@ public class MgmtLogs extends javax.swing.JPanel {
     }// </editor-fold>//GEN-END:initComponents
 
     private void clearBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_clearBtnActionPerformed
-        
+        int result = javax.swing.JOptionPane.showConfirmDialog(
+                this, "Clear the security event log?",
+                "CLEAR SECURITY LOGS",
+                javax.swing.JOptionPane.YES_NO_OPTION);
+        if (result == javax.swing.JOptionPane.YES_OPTION) {
+            try {
+                sqlite.clearLogs();
+                init();
+            } catch (AppException | SecurityException ex) {
+                if (ex instanceof AppException
+                        && ((AppException) ex).isFatal()) {
+                    return;
+                }
+                javax.swing.JOptionPane.showMessageDialog(
+                        this, ex.getMessage(),
+                        "Logs could not be cleared",
+                        javax.swing.JOptionPane.ERROR_MESSAGE);
+            }
+        }
     }//GEN-LAST:event_clearBtnActionPerformed
 
     private void debugBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_debugBtnActionPerformed
