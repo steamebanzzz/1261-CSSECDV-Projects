@@ -1,6 +1,11 @@
 
 package View;
 
+import Controller.AppException;
+import Model.LoginResult;
+import java.util.Arrays;
+import javax.swing.JOptionPane;
+
 public class Login extends javax.swing.JPanel {
 
     public Frame frame;
@@ -15,7 +20,7 @@ public class Login extends javax.swing.JPanel {
 
         jLabel1 = new javax.swing.JLabel();
         usernameFld = new javax.swing.JTextField();
-        passwordFld = new javax.swing.JTextField();
+        passwordFld = new javax.swing.JPasswordField();
         registerBtn = new javax.swing.JButton();
         loginBtn = new javax.swing.JButton();
 
@@ -82,19 +87,70 @@ public class Login extends javax.swing.JPanel {
                 .addContainerGap(126, Short.MAX_VALUE))
         );
     }// </editor-fold>//GEN-END:initComponents
-    private void loginBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_loginBtnActionPerformed
-        frame.mainNav();
+    
+    private void loginBtnActionPerformed(java.awt.event.ActionEvent evt) {
+        char[] password = passwordFld.getPassword();
+
+        try {
+            LoginResult result =
+                    frame.loginAction(usernameFld.getText(), password);
+
+            if (!result.isSuccessful()) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        "Invalid username and/or password.",
+                        "Login Failed",
+                        JOptionPane.ERROR_MESSAGE);
+
+            } else {
+                String previousAttempt =
+                        result.getPreviousTime() == null
+                                ? "No previous login attempt"
+                                : result.getPreviousTime() + " ("
+                                + result.getPreviousStatus() + ")";
+
+                String previousSuccess =
+                        result.getLastSuccessfulLogin() == null
+                                ? "No previous successful login"
+                                : result.getLastSuccessfulLogin();
+
+                JOptionPane.showMessageDialog(
+                        this,
+                        "Previous login attempt: " + previousAttempt
+                        + "\nPrevious successful login: "
+                        + previousSuccess,
+                        "Login Successful",
+                        JOptionPane.INFORMATION_MESSAGE);
+            }
+
+        } catch (AppException ex) {
+            if (!ex.isFatal()) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        "Login could not be completed. Please try again.",
+                        "Login Failed",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+
+        } finally {
+            Arrays.fill(password, '\0');
+            passwordFld.setText("");
+        }
     }//GEN-LAST:event_loginBtnActionPerformed
 
     private void registerBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_registerBtnActionPerformed
         frame.registerNav();
     }//GEN-LAST:event_registerBtnActionPerformed
 
+    public void clearCredentials() {
+        usernameFld.setText("");
+        passwordFld.setText("");
+    }
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JLabel jLabel1;
     private javax.swing.JButton loginBtn;
-    private javax.swing.JTextField passwordFld;
+    private javax.swing.JPasswordField passwordFld;
     private javax.swing.JButton registerBtn;
     private javax.swing.JTextField usernameFld;
     // End of variables declaration//GEN-END:variables
