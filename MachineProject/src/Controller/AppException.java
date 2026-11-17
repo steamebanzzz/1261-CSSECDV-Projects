@@ -11,6 +11,11 @@ public final class AppException extends RuntimeException {
         this.fatal = fatal;
     }
 
+    public AppException(String message, boolean fatal, Throwable cause) {
+        super(message, cause);
+        this.fatal = fatal;
+    }
+
     public boolean isFatal() {
         return fatal;
     }
