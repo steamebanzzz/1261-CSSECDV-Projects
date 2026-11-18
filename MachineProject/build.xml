@@ -70,4 +70,11 @@
     nbproject/build-impl.xml file. 
 
     -->
+
+    <!-- Deliverable: dist/ must run on its own, so ship the database
+         (seeded demo accounts, hashed passwords) beside the JAR. "Clean and
+         Build" deletes dist/, and this copies database.db back afterwards. -->
+    <target name="-post-jar">
+        <copy file="database.db" todir="${dist.dir}" overwrite="true"/>
+    </target>
 </project>
