@@ -1,7 +1,6 @@
 
 package View;
 
-import Controller.AppException;
 import java.util.Arrays;
 import javax.swing.JOptionPane;
 
@@ -11,6 +10,7 @@ public class Register extends javax.swing.JPanel {
     
     public Register() {
         initComponents();
+        showPasswordPolicy();
     }
 
     @SuppressWarnings("unchecked")
@@ -108,17 +108,10 @@ public class Register extends javax.swing.JPanel {
                     usernameFld.getText(), password, confirmation);
             JOptionPane.showMessageDialog(
                     this, "Registration successful. Please log in.");
+            clearCredentials();
             frame.loginNav();
-        } catch (IllegalArgumentException ex) {
-            JOptionPane.showMessageDialog(
-                    this, ex.getMessage(), "Registration failed",
-                    JOptionPane.ERROR_MESSAGE);
-        } catch (AppException ex) {
-            if (!ex.isFatal()) {
-                JOptionPane.showMessageDialog(
-                        this, "Registration could not be completed.",
-                        "Registration failed", JOptionPane.ERROR_MESSAGE);
-            }
+        } catch (RuntimeException ex) {
+            UiGuard.handle(this, ex);
         } finally {
             Arrays.fill(password, '\0');
             Arrays.fill(confirmation, '\0');
@@ -128,9 +121,26 @@ public class Register extends javax.swing.JPanel {
     }//GEN-LAST:event_registerBtnActionPerformed
 
     private void backBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_backBtnActionPerformed
-        frame.loginNav();
+        clearCredentials();
+        UiGuard.run(this, () -> frame.loginNav());
     }//GEN-LAST:event_backBtnActionPerformed
 
+    public void clearCredentials() {
+        usernameFld.setText("");
+        passwordFld.setText("");
+        confpassFld.setText("");
+    }
+
+    /** States the password policy before the user types (2.1.5 / 2.1.6). */
+    private void showPasswordPolicy() {
+        String policy = "12-128 characters with uppercase, lowercase, "
+                + "digits and symbols (no spaces)";
+        passwordFld.setToolTipText(policy);
+        confpassFld.setToolTipText(policy);
+        usernameFld.setToolTipText("3-32 letters or digits");
+        ((javax.swing.border.TitledBorder) passwordFld.getBorder())
+                .setTitle("PASSWORD (12-128 chars: A-Z, a-z, 0-9, symbol)");
+    }
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton backBtn;

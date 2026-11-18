@@ -37,14 +37,14 @@ public final class SQLiteSearchHistoryTest {
         }
 
         SQLite sqlite = new SQLite();
-        String operator = "SearchDaoAdmin"
+        String operator = "SearchDaoManager"
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         char[] password = "SearchAdmin!7312".toCharArray();
         seedHistory(operator, password);
 
         try {
             if (!sqlite.login(operator, password).isSuccessful()) {
-                throw new AssertionError("Could not authenticate test admin.");
+                throw new AssertionError("Could not authenticate test manager.");
             }
 
             ArrayList<History> lowerCase = sqlite.searchHistory("admin");
@@ -105,7 +105,7 @@ public final class SQLiteSearchHistoryTest {
             }
             try (PreparedStatement user = conn.prepareStatement(
                     "INSERT INTO users(username,password,role,locked,"
-                    + "failed_attempts) VALUES(?,?,5,0,0)")) {
+                    + "failed_attempts) VALUES(?,?,4,0,0)")) {
                 user.setString(1, operator);
                 user.setString(2, PasswordHasher.hash(password));
                 user.executeUpdate();
@@ -140,14 +140,14 @@ public final class SQLiteSearchHistoryTest {
     private static boolean hasTimestampedSearchValidationLogs(
             String operator) throws Exception {
         String sql = "SELECT timestamp FROM logs WHERE event = ? "
-                + "AND username = ? AND desc = ?";
+                + "AND username = ? AND desc LIKE ?";
         try (Connection conn =
                 DriverManager.getConnection("jdbc:sqlite:database.db");
                 PreparedStatement statement = conn.prepareStatement(sql)) {
             statement.setString(1, "VALIDATION_FAILURE");
             statement.setString(2, operator);
             statement.setString(
-                    3, "Rejected input for operation: search-history");
+                    3, "Rejected input for operation: search-history%");
             try (ResultSet rs = statement.executeQuery()) {
                 int count = 0;
                 while (rs.next()) {

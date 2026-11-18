@@ -1,13 +1,18 @@
 package View;
 
-import Controller.AppException;
+import Controller.AccessControl;
+import Controller.AccessControl.Permission;
 import Controller.Main;
 import Model.LoginResult;
-import java.awt.BorderLayout;
+import java.awt.AWTEvent;
 import java.awt.CardLayout;
-import java.awt.Dimension;
+import java.awt.Toolkit;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.WindowConstants;
 
 public class Frame extends javax.swing.JFrame {
@@ -184,129 +189,213 @@ public class Frame extends javax.swing.JFrame {
     }// </editor-fold>//GEN-END:initComponents
 
     private void adminBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_adminBtnActionPerformed
-        showRoleDashboard(5, adminHomePnl, "adminHomePnl");
+        showRoleDashboard(AccessControl.ADMIN, adminHomePnl, "adminHomePnl");
     }//GEN-LAST:event_adminBtnActionPerformed
 
     private void managerBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_managerBtnActionPerformed
-        showRoleDashboard(4, managerHomePnl, "managerHomePnl");
+        showRoleDashboard(AccessControl.MANAGER, managerHomePnl, "managerHomePnl");
     }//GEN-LAST:event_managerBtnActionPerformed
 
     private void staffBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_staffBtnActionPerformed
-        showRoleDashboard(3, staffHomePnl, "staffHomePnl");
+        showRoleDashboard(AccessControl.STAFF, staffHomePnl, "staffHomePnl");
     }//GEN-LAST:event_staffBtnActionPerformed
 
     private void clientBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_clientBtnActionPerformed
-        showRoleDashboard(2, clientHomePnl, "clientHomePnl");
+        showRoleDashboard(AccessControl.CLIENT, clientHomePnl, "clientHomePnl");
     }//GEN-LAST:event_clientBtnActionPerformed
 
     private void logoutBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_logoutBtnActionPerformed
         try {
             main.sqlite.logout();
-        } catch (AppException ex) {
-            if (!ex.isFatal()) {
-                javax.swing.JOptionPane.showMessageDialog(
-                        this, "Logout completed, but the security event "
-                        + "could not be recorded.",
-                        "Logout warning",
-                        javax.swing.JOptionPane.WARNING_MESSAGE);
-            }
+        } catch (RuntimeException ex) {
+            // The user is signed out below no matter what.
         } finally {
-            loginPnl.clearCredentials();
-            setRoleNavigation(0);
-            frameView.show(Container, "loginPnl");
+            showLogin();
         }
     }//GEN-LAST:event_logoutBtnActionPerformed
+
+    /** Minutes of inactivity before the session is ended automatically. */
+    private static final int IDLE_MINUTES = 5;
 
     public Main main;
     public Login loginPnl = new Login();
     public Register registerPnl = new Register();
-    
+
     private AdminHome adminHomePnl = new AdminHome();
     private ManagerHome managerHomePnl = new ManagerHome();
     private StaffHome staffHomePnl = new StaffHome();
     private ClientHome clientHomePnl = new ClientHome();
-    
+
     private CardLayout contentView = new CardLayout();
     private CardLayout frameView = new CardLayout();
-    
+    private int currentDashboardRole = 0;
+    private Timer idleTimer;
+
     public void init(Main controller){
         this.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         this.setTitle("CSSECDV - SECURITY Svcs");
         this.setLocationRelativeTo(null);
-        
+
         this.main = controller;
+        UiGuard.install(this);
         main.sqlite.setFatalErrorHandler(
                 () -> SwingUtilities.invokeLater(this::handleFatalError));
         loginPnl.frame = this;
         registerPnl.frame = this;
         setRoleNavigation(0);
-        
+
         adminHomePnl.init(main.sqlite);
         clientHomePnl.init(main.sqlite);
         managerHomePnl.init(main.sqlite);
         staffHomePnl.init(main.sqlite);
-        
+
         Container.setLayout(frameView);
         Container.add(loginPnl, "loginPnl");
         Container.add(registerPnl, "registerPnl");
         Container.add(HomePnl, "homePnl");
         frameView.show(Container, "loginPnl");
-        
+
         Content.setLayout(contentView);
         Content.add(adminHomePnl, "adminHomePnl");
         Content.add(managerHomePnl, "managerHomePnl");
         Content.add(staffHomePnl, "staffHomePnl");
         Content.add(clientHomePnl, "clientHomePnl");
-        
+
+        // Closing the window ends the session and records the logout.
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                try {
+                    main.sqlite.logout();
+                } catch (RuntimeException ex) {
+                    // Exiting anyway.
+                }
+            }
+        });
+        startIdleMonitor();
+
         this.setVisible(true);
+    }
+
+    /** Session idle timeout: any key or mouse activity restarts it. */
+    private void startIdleMonitor() {
+        idleTimer = new Timer(IDLE_MINUTES * 60 * 1000, event -> onIdleTimeout());
+        idleTimer.setRepeats(false);
+        Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
+            if (idleTimer.isRunning()) {
+                idleTimer.restart();
+            }
+        }, AWTEvent.KEY_EVENT_MASK | AWTEvent.MOUSE_EVENT_MASK
+                | AWTEvent.MOUSE_MOTION_EVENT_MASK
+                | AWTEvent.MOUSE_WHEEL_EVENT_MASK);
+    }
+
+    private void onIdleTimeout() {
+        if (currentDashboardRole == 0) {
+            return;
+        }
+        try {
+            main.sqlite.expireSession(IDLE_MINUTES);
+        } catch (RuntimeException ex) {
+            main.sqlite.invalidateSession();
+        }
+        showLogin();
+        JOptionPane.showMessageDialog(this,
+                "Your session expired after " + IDLE_MINUTES
+                + " minutes of inactivity. Please sign in again.",
+                "Session expired", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** The single "safe, unprivileged state": the login screen. */
+    private void showLogin() {
+        if (idleTimer != null) {
+            idleTimer.stop();
+        }
+        currentDashboardRole = 0;
+        loginPnl.clearCredentials();
+        registerPnl.clearCredentials();
+        setRoleNavigation(0);
+        frameView.show(Container, "loginPnl");
     }
 
     private void handleFatalError() {
         main.sqlite.invalidateSession();
-        loginPnl.clearCredentials();
-        setRoleNavigation(0);
-        frameView.show(Container, "loginPnl");
-        javax.swing.JOptionPane.showMessageDialog(
+        showLogin();
+        JOptionPane.showMessageDialog(
                 this,
                 "A system error occurred. Please sign in again.",
                 "Session ended",
-                javax.swing.JOptionPane.ERROR_MESSAGE);
+                JOptionPane.ERROR_MESSAGE);
     }
-    
+
+    /** Fail-safe for unexpected errors (called by UiGuard). */
+    void resetToLogin(String errorType) {
+        try {
+            if (main != null && main.sqlite != null) {
+                main.sqlite.recordUnexpectedError(errorType);
+                main.sqlite.invalidateSession();
+            }
+        } finally {
+            showLogin();
+        }
+    }
+
+    /**
+     * Re-checks the session after a denied request: a signed-out or revoked
+     * user goes to login; a user whose role changed goes to their own home.
+     */
+    void enforceSession() {
+        int role = main.sqlite.getAuthenticatedRole();
+        if (role == 0) {
+            showLogin();
+        } else if (role != currentDashboardRole) {
+            mainNav();
+        }
+    }
+
     public void mainNav(){
         int role = main.sqlite.getAuthenticatedRole();
-        if (role < 2 || role > 5) {
-            setRoleNavigation(0);
-            frameView.show(Container, "loginPnl");
+        if (AccessControl.homeFor(role) == null) {
+            showLogin();
             return;
         }
 
         setRoleNavigation(role);
         frameView.show(Container, "homePnl");
-        if (role == 5) {
-            showRoleDashboard(5, adminHomePnl, "adminHomePnl");
-        } else if (role == 4) {
-            showRoleDashboard(4, managerHomePnl, "managerHomePnl");
-        } else if (role == 3) {
-            showRoleDashboard(3, staffHomePnl, "staffHomePnl");
+        if (role == AccessControl.ADMIN) {
+            showRoleDashboard(role, adminHomePnl, "adminHomePnl");
+        } else if (role == AccessControl.MANAGER) {
+            showRoleDashboard(role, managerHomePnl, "managerHomePnl");
+        } else if (role == AccessControl.STAFF) {
+            showRoleDashboard(role, staffHomePnl, "staffHomePnl");
         } else {
-            showRoleDashboard(2, clientHomePnl, "clientHomePnl");
+            showRoleDashboard(role, clientHomePnl, "clientHomePnl");
+        }
+        if (idleTimer != null) {
+            idleTimer.restart();
         }
     }
 
+    /** Navigation visibility comes from the central AccessControl policy. */
     private void setRoleNavigation(int role) {
-        adminBtn.setVisible(role == 5);
-        managerBtn.setVisible(role == 4);
-        staffBtn.setVisible(role == 3);
-        clientBtn.setVisible(role == 2);
-        logoutBtn.setVisible(role >= 2 && role <= 5);
+        adminBtn.setVisible(
+                AccessControl.isAllowed(role, Permission.VIEW_ADMIN_HOME));
+        managerBtn.setVisible(
+                AccessControl.isAllowed(role, Permission.VIEW_MANAGER_HOME));
+        staffBtn.setVisible(
+                AccessControl.isAllowed(role, Permission.VIEW_STAFF_HOME));
+        clientBtn.setVisible(
+                AccessControl.isAllowed(role, Permission.VIEW_CLIENT_HOME));
+        logoutBtn.setVisible(AccessControl.homeFor(role) != null);
     }
 
     private void showRoleDashboard(
             int role, JPanel dashboard, String cardName) {
-
-        if (main.sqlite.getAuthenticatedRole() != role) {
-            mainNav();
+        Permission home = AccessControl.homeFor(role);
+        // Every home-panel request is authorized (and violations logged).
+        if (home == null
+                || !main.sqlite.authorizeView(home, home.getDescription())) {
+            enforceSession();
             return;
         }
 
@@ -319,25 +408,27 @@ public class Frame extends javax.swing.JFrame {
         } else if (dashboard == clientHomePnl) {
             clientHomePnl.showPnl("home");
         }
+        currentDashboardRole = role;
         contentView.show(Content, cardName);
     }
-    
+
     public void loginNav(){
         if (main != null && main.sqlite.getAuthenticatedRole() != 0) {
             mainNav();
             return;
         }
-        frameView.show(Container, "loginPnl");
+        showLogin();
     }
-    
+
     public void registerNav(){
         if (main.sqlite.getAuthenticatedRole() != 0) {
             mainNav();
             return;
         }
+        registerPnl.clearCredentials();
         frameView.show(Container, "registerPnl");
     }
-    
+
     public LoginResult loginAction(String username, char[] password) {
         LoginResult result = main.sqlite.login(username, password);
         if (result.isSuccessful()) {

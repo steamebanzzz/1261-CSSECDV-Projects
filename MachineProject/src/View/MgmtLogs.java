@@ -5,7 +5,6 @@
  */
 package View;
 
-import Controller.AppException;
 import Controller.SQLite;
 import Model.Logs;
 import java.util.ArrayList;
@@ -26,9 +25,13 @@ public class MgmtLogs extends javax.swing.JPanel {
         tableModel = (DefaultTableModel)table.getModel();
         table.getTableHeader().setFont(new java.awt.Font("SansSerif", java.awt.Font.BOLD, 14));
         
-//        UNCOMMENT TO DISABLE BUTTONS
-//        clearBtn.setVisible(false);
-//        debugBtn.setVisible(false);
+        // Debug mode must not be switchable from inside the application
+        // (production code never produces debug output), so the starter
+        // template's toggle is removed from the UI.
+        debugBtn.setVisible(false);
+        debugBtn.setEnabled(false);
+        // "Clear" archives entries: hidden from this view, kept for audit.
+        clearBtn.setText("ARCHIVE (CLEAR VIEW)");
     }
 
     public void init(){
@@ -137,31 +140,23 @@ public class MgmtLogs extends javax.swing.JPanel {
 
     private void clearBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_clearBtnActionPerformed
         int result = javax.swing.JOptionPane.showConfirmDialog(
-                this, "Clear the security event log?",
-                "CLEAR SECURITY LOGS",
+                this, "Archive all current security log entries?\n"
+                + "They will be hidden from this view but retained "
+                + "in the database for audit purposes.",
+                "ARCHIVE SECURITY LOGS",
                 javax.swing.JOptionPane.YES_NO_OPTION);
         if (result == javax.swing.JOptionPane.YES_OPTION) {
             try {
-                sqlite.clearLogs();
+                sqlite.archiveLogs();
                 init();
-            } catch (AppException | SecurityException ex) {
-                if (ex instanceof AppException
-                        && ((AppException) ex).isFatal()) {
-                    return;
-                }
-                javax.swing.JOptionPane.showMessageDialog(
-                        this, ex.getMessage(),
-                        "Logs could not be cleared",
-                        javax.swing.JOptionPane.ERROR_MESSAGE);
+            } catch (RuntimeException ex) {
+                UiGuard.handle(this, ex);
             }
         }
     }//GEN-LAST:event_clearBtnActionPerformed
 
     private void debugBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_debugBtnActionPerformed
-        if(sqlite.DEBUG_MODE == 1)
-            sqlite.DEBUG_MODE = 0;
-        else
-            sqlite.DEBUG_MODE = 1;
+        // Intentionally does nothing: the button is hidden and disabled.
     }//GEN-LAST:event_debugBtnActionPerformed
 
 

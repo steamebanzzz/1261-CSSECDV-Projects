@@ -1,28 +1,52 @@
 package Controller;
 
+import Controller.AccessControl.Permission;
 import Model.History;
 import Model.LoginResult;
 import Model.Logs;
 import Model.Product;
 import Model.User;
+import java.io.File;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
+/**
+ * Data-access controller. SECURITY DESIGN:
+ *  - Every public operation first calls authorize(...), which re-reads the
+ *    session's account from the database and checks it against the single
+ *    AccessControl policy (default deny, every denial logged).
+ *  - Every SQL statement is a PreparedStatement; user data is only ever bound
+ *    as a parameter, never concatenated into SQL.
+ *  - Inputs are validated with Validation (reject, never sanitize) and every
+ *    rejection is written to the security log.
+ *  - SQLException and other technical errors are never shown to the user;
+ *    they are converted into AppException with a generic message.
+ */
 public class SQLite {
 
-    public int DEBUG_MODE = 0;
-    String driverURL = "jdbc:sqlite:" + "database.db";
+    private static final int MAX_FAILED_ATTEMPTS = 5;
+    private static final String ANONYMOUS = "<anonymous>";
+    private static final String DENIED_MESSAGE =
+            "You are not authorized to perform this action.";
+    private static final String ADMIN_TARGET_MESSAGE =
+            "Administrator accounts can only be managed by the "
+            + "super administrator.";
+    private static final List<String> SCHEMA_TABLES =
+            Arrays.asList("users", "product", "history", "logs");
+
+    private final String driverURL;
+    private final String dummyHash;
     private volatile AuthenticatedUser session;
     private volatile Runnable fatalErrorHandler;
 
@@ -38,142 +62,258 @@ public class SQLite {
         }
     }
 
+    private static final class Account {
+        private final int id;
+        private final String username;
+        private final int role;
+        private final int locked;
+        private final Integer roleBeforeLock;
+
+        private Account(int id, String username, int role, int locked,
+                Integer roleBeforeLock) {
+            this.id = id;
+            this.username = username;
+            this.role = role;
+            this.locked = locked;
+            this.roleBeforeLock = roleBeforeLock;
+        }
+
+        /** Admin accounts, including locked ones, are off-limits. */
+        private boolean isAdministrator() {
+            return role == AccessControl.ADMIN
+                    || (roleBeforeLock != null
+                    && roleBeforeLock == AccessControl.ADMIN);
+        }
+    }
+
     public SQLite() {
+        driverURL = "jdbc:sqlite:" + resolveDatabasePath();
+        dummyHash = createDummyHash();
         initializeDatabase();
     }
 
+    // ------------------------------------------------------------------
+    // Setup
+    // ------------------------------------------------------------------
+
+    /**
+     * Uses database.db from the working directory, or the one beside the
+     * JAR when the program is started from another directory.
+     */
+    private static String resolveDatabasePath() {
+        File local = new File("database.db");
+        if (local.isFile()) {
+            return local.getPath();
+        }
+        try {
+            File code = new File(SQLite.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            File directory = code.isFile() ? code.getParentFile() : code;
+            File besideJar = new File(directory, "database.db");
+            if (besideJar.isFile()) {
+                return besideJar.getAbsolutePath();
+            }
+        } catch (Exception ex) {
+            // Fall back to the working directory.
+        }
+        return "database.db";
+    }
+
+    /** Hash of a random secret, used to equalize login timing. */
+    private static String createDummyHash() {
+        SecureRandom random = new SecureRandom();
+        char[] secret = new char[24];
+        for (int i = 0; i < secret.length; i++) {
+            secret[i] = (char) ('!' + random.nextInt(94));
+        }
+        try {
+            return PasswordHasher.hash(secret);
+        } finally {
+            Arrays.fill(secret, '\0');
+        }
+    }
+
+    private Connection connect() throws SQLException {
+        return DriverManager.getConnection(driverURL);
+    }
+
     private void initializeDatabase() {
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
-            try (Statement statement = conn.createStatement()) {
-                statement.execute("CREATE TABLE IF NOT EXISTS users ("
+            try {
+                execute(conn, "CREATE TABLE IF NOT EXISTS users ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "username TEXT NOT NULL UNIQUE,"
                         + "password TEXT NOT NULL,"
                         + "role INTEGER DEFAULT 2,"
                         + "locked INTEGER DEFAULT 0)");
-                statement.execute("CREATE TABLE IF NOT EXISTS product ("
+                execute(conn, "CREATE TABLE IF NOT EXISTS product ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "name TEXT NOT NULL UNIQUE,"
                         + "stock INTEGER DEFAULT 0,"
                         + "price REAL DEFAULT 0.00)");
-                statement.execute("CREATE TABLE IF NOT EXISTS history ("
+                execute(conn, "CREATE TABLE IF NOT EXISTS history ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "username TEXT NOT NULL,"
                         + "name TEXT NOT NULL,"
                         + "stock INTEGER DEFAULT 0,"
                         + "timestamp TEXT NOT NULL)");
-                statement.execute("CREATE TABLE IF NOT EXISTS logs ("
+                execute(conn, "CREATE TABLE IF NOT EXISTS logs ("
                         + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                         + "event TEXT NOT NULL,"
                         + "username TEXT NOT NULL,"
                         + "desc TEXT NOT NULL,"
                         + "timestamp TEXT NOT NULL)");
-            }
 
-            addColumnIfMissing(
-                    conn, "users", "failed_attempts",
-                    "INTEGER NOT NULL DEFAULT 0");
-            addColumnIfMissing(
-                    conn, "users", "role_before_lock", "INTEGER");
-            addColumnIfMissing(
-                    conn, "users", "last_login_attempt_at", "TEXT");
-            addColumnIfMissing(
-                    conn, "users", "last_login_status", "TEXT");
-            addColumnIfMissing(
-                    conn, "users", "last_successful_login_at", "TEXT");
-            addColumnIfMissing(conn, "history", "user_id", "INTEGER");
-            addColumnIfMissing(conn, "history", "product_id", "INTEGER");
-            addColumnIfMissing(
-                    conn, "history", "unit_price_cents", "INTEGER");
+                addColumnIfMissing(conn, "users", "failed_attempts",
+                        "INTEGER NOT NULL DEFAULT 0");
+                addColumnIfMissing(conn, "users", "role_before_lock",
+                        "INTEGER");
+                addColumnIfMissing(conn, "users", "last_login_attempt_at",
+                        "TEXT");
+                addColumnIfMissing(conn, "users", "last_login_status",
+                        "TEXT");
+                addColumnIfMissing(conn, "users",
+                        "last_successful_login_at", "TEXT");
+                addColumnIfMissing(conn, "history", "user_id", "INTEGER");
+                addColumnIfMissing(conn, "history", "product_id",
+                        "INTEGER");
+                addColumnIfMissing(conn, "history", "unit_price_cents",
+                        "INTEGER");
+                addColumnIfMissing(conn, "logs", "archived",
+                        "INTEGER NOT NULL DEFAULT 0");
+                addColumnIfMissing(conn, "logs", "archived_at", "TEXT");
+                addColumnIfMissing(conn, "logs", "archived_by", "TEXT");
 
-            try (Statement statement = conn.createStatement()) {
-                statement.executeUpdate(
-                        "UPDATE users SET role_before_lock = role "
+                execute(conn, "UPDATE users SET role_before_lock = role "
                         + "WHERE locked = 1 AND role BETWEEN 2 AND 5 "
                         + "AND role_before_lock IS NULL");
-                statement.executeUpdate(
-                        "UPDATE history SET user_id = ("
+                execute(conn, "UPDATE history SET user_id = ("
                         + "SELECT id FROM users WHERE "
                         + "users.username = history.username) "
                         + "WHERE user_id IS NULL");
-                statement.executeUpdate(
-                        "UPDATE history SET product_id = ("
+                execute(conn, "UPDATE history SET product_id = ("
                         + "SELECT id FROM product WHERE "
                         + "product.name = history.name) "
                         + "WHERE product_id IS NULL");
-                statement.executeUpdate(
-                        "UPDATE history SET unit_price_cents = ("
+                execute(conn, "UPDATE history SET unit_price_cents = ("
                         + "SELECT CAST(ROUND(price * 100) AS INTEGER) "
                         + "FROM product WHERE product.name = history.name) "
                         + "WHERE unit_price_cents IS NULL "
                         + "AND EXISTS (SELECT 1 FROM product "
                         + "WHERE product.name = history.name)");
-                statement.execute(
-                        "CREATE INDEX IF NOT EXISTS "
+                execute(conn, "CREATE INDEX IF NOT EXISTS "
                         + "history_user_id_idx ON history(user_id)");
-                statement.execute(
-                        "CREATE INDEX IF NOT EXISTS "
+                execute(conn, "CREATE INDEX IF NOT EXISTS "
                         + "history_product_id_idx ON history(product_id)");
-                statement.execute(
-                        "CREATE INDEX IF NOT EXISTS "
+                execute(conn, "CREATE INDEX IF NOT EXISTS "
                         + "logs_timestamp_idx ON logs(timestamp)");
+                // Usernames are case-insensitive: "Admin" == "admin".
+                execute(conn, "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        + "users_username_nocase_idx "
+                        + "ON users(username COLLATE NOCASE)");
+
+                migratePlaintextPasswords(conn);
+                conn.commit();
+            } catch (SQLException ex) {
+                rollback(conn, ex);
+                throw ex;
             }
-            conn.commit();
         } catch (SQLException ex) {
             throw fatalException(
                     "Database initialization could not be completed.", ex);
         }
     }
 
-    private static void addColumnIfMissing(
-            Connection conn, String table, String column, String definition)
+    private static void execute(Connection conn, String sql)
             throws SQLException {
-
-        boolean found = false;
-        try (Statement statement = conn.createStatement();
-                ResultSet columns =
-                        statement.executeQuery("PRAGMA table_info(" + table + ")")) {
-            while (columns.next()) {
-                if (column.equalsIgnoreCase(columns.getString("name"))) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if (!found) {
-            try (Statement statement = conn.createStatement()) {
-                statement.execute(
-                        "ALTER TABLE " + table + " ADD COLUMN "
-                        + column + " " + definition);
-            }
+        try (PreparedStatement statement = conn.prepareStatement(sql)) {
+            statement.execute();
         }
     }
 
-    public synchronized LoginResult login(
-            String username, char[] password) {
+    private static void addColumnIfMissing(
+            Connection conn, String table, String column, String definition)
+            throws SQLException {
+        // Identifiers cannot be bound as parameters, so only fixed,
+        // whitelisted schema names reach the ALTER TABLE statement.
+        if (!SCHEMA_TABLES.contains(table) || !column.matches("[a-z_]+")) {
+            throw new IllegalStateException("Invalid schema change.");
+        }
+        try (PreparedStatement statement = conn.prepareStatement(
+                "SELECT 1 FROM pragma_table_info(?) WHERE name = ?")) {
+            statement.setString(1, table);
+            statement.setString(2, column);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (rs.next()) {
+                    return;
+                }
+            }
+        }
+        execute(conn, "ALTER TABLE " + table + " ADD COLUMN "
+                + column + " " + definition);
+    }
 
+    /** Replaces any plaintext password left in the database by a hash. */
+    private static void migratePlaintextPasswords(Connection conn)
+            throws SQLException {
+        List<Integer> ids = new ArrayList<Integer>();
+        List<String> usernames = new ArrayList<String>();
+        List<String> passwords = new ArrayList<String>();
+        try (PreparedStatement statement = conn.prepareStatement(
+                "SELECT id, username, password FROM users");
+                ResultSet rs = statement.executeQuery()) {
+            while (rs.next()) {
+                String stored = rs.getString("password");
+                if (!PasswordHasher.isHash(stored)) {
+                    ids.add(rs.getInt("id"));
+                    usernames.add(rs.getString("username"));
+                    passwords.add(stored == null ? "" : stored);
+                }
+            }
+        }
+        for (int i = 0; i < ids.size(); i++) {
+            char[] plain = passwords.get(i).toCharArray();
+            try (PreparedStatement update = conn.prepareStatement(
+                    "UPDATE users SET password = ? WHERE id = ?")) {
+                update.setString(1, PasswordHasher.hash(plain));
+                update.setInt(2, ids.get(i));
+                update.executeUpdate();
+            } finally {
+                Arrays.fill(plain, '\0');
+            }
+            insertLog(conn, "PASSWORD_HASH_MIGRATED", usernames.get(i),
+                    "Plaintext password replaced with a salted "
+                    + "PBKDF2-HMAC-SHA256 hash", timestamp());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Authentication
+    // ------------------------------------------------------------------
+
+    public synchronized LoginResult login(String username, char[] password) {
         logout();
-        if (!Validation.validUsername(username) || password == null) {
+
+        boolean validName = Validation.validUsername(username);
+        if (!validName || !Validation.validCredentialLength(password)) {
             recordSecurityEvent(
                     "LOGIN_VALIDATION_FAILURE",
-                    Validation.validUsername(username)
-                            ? username : "<invalid>",
-                    "Rejected malformed login input");
-            return new LoginResult(false, null, "FAILURE");
+                    validName ? username : "<invalid>",
+                    validName
+                            ? "Rejected login input: password length must "
+                            + "be 1-128 characters"
+                            : "Rejected login input: username must match "
+                            + "[A-Za-z0-9]{3,32}");
+            return LoginResult.failure();
         }
 
-        String timestamp = Instant.now().toString();
-        String query = "SELECT id, password, role, locked, failed_attempts, "
-                + "last_login_attempt_at, last_login_status, "
-                + "last_successful_login_at "
-                + "FROM users WHERE username = ?";
-
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        String timestamp = timestamp();
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
                 int id;
+                String accountName;
                 String storedPassword;
                 int role;
                 int locked;
@@ -182,173 +322,263 @@ public class SQLite {
                 String previousStatus;
                 String lastSuccessfulLogin;
 
-                try (PreparedStatement statement =
-                        conn.prepareStatement(query)) {
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "SELECT id, username, password, role, locked, "
+                        + "failed_attempts, last_login_attempt_at, "
+                        + "last_login_status, last_successful_login_at "
+                        + "FROM users WHERE username = ? COLLATE NOCASE")) {
                     statement.setString(1, username);
                     try (ResultSet rs = statement.executeQuery()) {
                         if (!rs.next()) {
+                            // Same work as a real check: no timing leak.
+                            verifyAgainstDummy(password);
                             insertLog(conn, "LOGIN_FAILURE", username,
                                     "Invalid credentials", timestamp);
                             conn.commit();
-                            return new LoginResult(
-                                    false, null, "FAILURE");
+                            return LoginResult.failure();
                         }
-
                         id = rs.getInt("id");
+                        accountName = rs.getString("username");
                         storedPassword = rs.getString("password");
                         role = rs.getInt("role");
                         locked = rs.getInt("locked");
                         failedAttempts = rs.getInt("failed_attempts");
                         previousAttemptAt =
                                 rs.getString("last_login_attempt_at");
-                        previousStatus =
-                                rs.getString("last_login_status");
+                        previousStatus = rs.getString("last_login_status");
                         lastSuccessfulLogin =
                                 rs.getString("last_successful_login_at");
                     }
                 }
 
                 if (role < 2 || role > 5 || locked != 0) {
-                    updateLoginStatus(
-                            conn, id, timestamp, "BLOCKED");
-                    insertLog(conn, "LOGIN_BLOCKED", username,
+                    verifyAgainstDummy(password);
+                    updateLoginStatus(conn, id, timestamp, "BLOCKED");
+                    insertLog(conn, "LOGIN_BLOCKED", accountName,
                             "Login rejected for a disabled or locked account",
                             timestamp);
                     conn.commit();
-                    return new LoginResult(
-                            false, null, "FAILURE");
+                    return LoginResult.failure();
                 }
 
-                boolean encodedHash =
-                        PasswordHasher.isHash(storedPassword);
-                boolean matches = encodedHash
-                        ? PasswordHasher.verify(password, storedPassword)
-                        : storedPassword != null
-                                && !storedPassword.startsWith(
-                                        "pbkdf2-sha256$")
-                                && matchesLegacyPassword(
-                                        password, storedPassword);
+                boolean matches;
+                if (PasswordHasher.isHash(storedPassword)) {
+                    matches = PasswordHasher.verify(password, storedPassword);
+                } else {
+                    // Fail closed: only salted hashes are ever accepted.
+                    verifyAgainstDummy(password);
+                    matches = false;
+                    insertLog(conn, "CREDENTIAL_INTEGRITY_FAILURE",
+                            accountName,
+                            "Stored password is not a valid salted hash; "
+                            + "login denied", timestamp);
+                }
 
                 if (!matches) {
                     int nextAttempts = failedAttempts + 1;
-                    boolean lockAccount = nextAttempts >= 5;
-                    String status = lockAccount ? "LOCKED" : "FAILURE";
-
-                    String update = "UPDATE users SET failed_attempts = ?, "
-                            + "locked = ?, "
-                            + "role = CASE WHEN ? = 1 THEN 1 ELSE role END, "
-                            + "role_before_lock = CASE "
-                            + "WHEN ? = 1 AND role BETWEEN 2 AND 5 "
-                            + "THEN role ELSE role_before_lock END, "
-                            + "last_login_attempt_at = ?, "
-                            + "last_login_status = ? WHERE id = ?";
-
-                    try (PreparedStatement statement =
-                            conn.prepareStatement(update)) {
-                        statement.setInt(1, nextAttempts);
-                        statement.setInt(2, lockAccount ? 1 : locked);
-                        statement.setInt(3, lockAccount ? 1 : 0);
-                        statement.setInt(4, lockAccount ? 1 : 0);
-                        statement.setString(5, timestamp);
-                        statement.setString(6, status);
-                        statement.setInt(7, id);
-                        statement.executeUpdate();
-                    }
-
-                    insertLog(conn, "LOGIN_FAILURE", username,
-                            "Invalid credentials; failed attempt "
-                                    + nextAttempts,
+                    boolean lockAccount = nextAttempts >= MAX_FAILED_ATTEMPTS;
+                    recordFailedAttempt(conn, id, nextAttempts, lockAccount,
+                            timestamp, true);
+                    insertLog(conn, "LOGIN_FAILURE", accountName,
+                            "Invalid credentials; consecutive failed attempt "
+                            + nextAttempts + " of " + MAX_FAILED_ATTEMPTS,
                             timestamp);
-
                     if (lockAccount) {
-                        insertLog(conn, "ACCOUNT_LOCKED", username,
-                                "Account locked after five failed login attempts",
+                        insertLog(conn, "ACCOUNT_LOCKED", accountName,
+                                "Account disabled (role 1) after five "
+                                + "consecutive failed login attempts",
                                 timestamp);
                     }
-
                     conn.commit();
-                    return new LoginResult(false, null, "FAILURE");
+                    return LoginResult.failure();
                 }
 
-                if (!encodedHash) {
-                    String updatePassword =
-                            "UPDATE users SET password = ? WHERE id = ?";
-                    try (PreparedStatement statement =
-                            conn.prepareStatement(updatePassword)) {
-                        statement.setString(
-                                1, PasswordHasher.hash(password));
-                        statement.setInt(2, id);
-                        statement.executeUpdate();
-                    }
-                }
-
-                String updateLogin = "UPDATE users SET failed_attempts = 0, "
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "UPDATE users SET failed_attempts = 0, "
                         + "last_login_attempt_at = ?, "
                         + "last_login_status = 'SUCCESS', "
-                        + "last_successful_login_at = ? WHERE id = ?";
-                try (PreparedStatement statement =
-                        conn.prepareStatement(updateLogin)) {
+                        + "last_successful_login_at = ? WHERE id = ?")) {
                     statement.setString(1, timestamp);
                     statement.setString(2, timestamp);
                     statement.setInt(3, id);
                     statement.executeUpdate();
                 }
-                insertLog(conn, "LOGIN_SUCCESS", username,
+                insertLog(conn, "LOGIN_SUCCESS", accountName,
                         "Successful login", timestamp);
                 conn.commit();
-                session = new AuthenticatedUser(id, username, role);
-                return new LoginResult(
-                        true, previousAttemptAt, previousStatus,
-                        lastSuccessfulLogin);
+                session = new AuthenticatedUser(id, accountName, role);
+                return LoginResult.success(previousAttemptAt, previousStatus,
+                        lastSuccessfulLogin, failedAttempts);
             } catch (SQLException ex) {
-                conn.rollback();
+                rollback(conn, ex);
                 throw ex;
             }
-        } catch (SQLException ex) {
-            throw fatalException(
-                    "Authentication could not be completed.", ex);
+        } catch (SQLException | IllegalStateException ex) {
+            throw fatalException("Authentication could not be completed.",
+                    ex);
         }
     }
 
-    public synchronized boolean authenticate(
-            String username, char[] password) {
-        return login(username, password).isSuccessful();
+    private void verifyAgainstDummy(char[] password) {
+        PasswordHasher.verify(password, dummyHash);
     }
 
-    private static boolean matchesLegacyPassword(
-            char[] password, String storedPassword) {
-
-        byte[] entered = new String(password)
-                .getBytes(StandardCharsets.UTF_8);
-        byte[] stored = storedPassword.getBytes(StandardCharsets.UTF_8);
-
-        try {
-            return MessageDigest.isEqual(entered, stored);
-        } finally {
-            Arrays.fill(entered, (byte) 0);
-            Arrays.fill(stored, (byte) 0);
+    private static void recordFailedAttempt(
+            Connection conn, int userId, int attempts, boolean lockAccount,
+            String timestamp, boolean loginAttempt) throws SQLException {
+        String sql = "UPDATE users SET failed_attempts = ?, "
+                + "locked = CASE WHEN ? = 1 THEN 1 ELSE locked END, "
+                + "role_before_lock = CASE WHEN ? = 1 AND role BETWEEN 2 "
+                + "AND 5 THEN role ELSE role_before_lock END, "
+                + "role = CASE WHEN ? = 1 THEN 1 ELSE role END"
+                + (loginAttempt ? ", last_login_attempt_at = ?, "
+                        + "last_login_status = ?" : "")
+                + " WHERE id = ?";
+        int lock = lockAccount ? 1 : 0;
+        try (PreparedStatement statement = conn.prepareStatement(sql)) {
+            int index = 1;
+            statement.setInt(index++, attempts);
+            statement.setInt(index++, lock);
+            statement.setInt(index++, lock);
+            statement.setInt(index++, lock);
+            if (loginAttempt) {
+                statement.setString(index++, timestamp);
+                statement.setString(index++,
+                        lockAccount ? "LOCKED" : "FAILURE");
+            }
+            statement.setInt(index, userId);
+            statement.executeUpdate();
         }
     }
 
-    public synchronized int getAuthenticatedRole() {
-        if (session == null) {
-            return 0;
-        }
-        try {
-            return requireRoles(
-                    "read-session-role", 2, 3, 4, 5).role;
-        } catch (SecurityException ex) {
-            return 0;
+    private static void updateLoginStatus(
+            Connection conn, int userId, String time, String status)
+            throws SQLException {
+        try (PreparedStatement statement = conn.prepareStatement(
+                "UPDATE users SET last_login_attempt_at = ?, "
+                + "last_login_status = ? WHERE id = ?")) {
+            statement.setString(1, time);
+            statement.setString(2, status);
+            statement.setInt(3, userId);
+            statement.executeUpdate();
         }
     }
+
+    /**
+     * Re-authentication before a critical operation. Wrong passwords count
+     * toward the same five-attempt lockout as the login screen.
+     */
+    private void requireReauthentication(
+            AuthenticatedUser user, char[] currentPassword, String operation) {
+        String timestamp = timestamp();
+        boolean signOut = false;
+        try (Connection conn = connect()) {
+            conn.setAutoCommit(false);
+            try {
+                String stored;
+                int role;
+                int locked;
+                int failedAttempts;
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "SELECT password, role, locked, failed_attempts "
+                        + "FROM users WHERE id = ?")) {
+                    statement.setInt(1, user.id);
+                    try (ResultSet rs = statement.executeQuery()) {
+                        if (!rs.next()) {
+                            stored = null;
+                            role = 0;
+                            locked = 1;
+                            failedAttempts = 0;
+                        } else {
+                            stored = rs.getString("password");
+                            role = rs.getInt("role");
+                            locked = rs.getInt("locked");
+                            failedAttempts = rs.getInt("failed_attempts");
+                        }
+                    }
+                }
+                if (stored == null || role != user.role || locked != 0) {
+                    insertLog(conn, "SESSION_REVOKED", user.username,
+                            "Session ended: account changed before "
+                            + operation, timestamp);
+                    conn.commit();
+                    session = null;
+                    throw new AccessDeniedException(DENIED_MESSAGE);
+                }
+
+                boolean verified =
+                        Validation.validCredentialLength(currentPassword)
+                        && PasswordHasher.verify(currentPassword, stored);
+                if (verified) {
+                    if (failedAttempts != 0) {
+                        recordFailedAttempt(conn, user.id, 0, false,
+                                timestamp, false);
+                    }
+                    insertLog(conn, "REAUTHENTICATION_SUCCESS",
+                            user.username,
+                            "Re-authenticated before " + operation,
+                            timestamp);
+                    conn.commit();
+                    return;
+                }
+
+                int nextAttempts = failedAttempts + 1;
+                boolean lockAccount = nextAttempts >= MAX_FAILED_ATTEMPTS;
+                recordFailedAttempt(conn, user.id, nextAttempts, lockAccount,
+                        timestamp, false);
+                insertLog(conn, "REAUTHENTICATION_FAILURE", user.username,
+                        "Re-authentication failed before " + operation
+                        + "; consecutive failed attempt " + nextAttempts
+                        + " of " + MAX_FAILED_ATTEMPTS, timestamp);
+                if (lockAccount) {
+                    insertLog(conn, "ACCOUNT_LOCKED", user.username,
+                            "Account disabled (role 1) after five "
+                            + "consecutive failed re-authentication attempts",
+                            timestamp);
+                    insertLog(conn, "SESSION_REVOKED", user.username,
+                            "Session ended after account lockout",
+                            timestamp);
+                }
+                conn.commit();
+                signOut = lockAccount;
+            } catch (SQLException ex) {
+                rollback(conn, ex);
+                throw ex;
+            }
+        } catch (SQLException | IllegalStateException ex) {
+            throw fatalException("Re-authentication could not be completed.",
+                    ex);
+        }
+        if (signOut) {
+            session = null;
+            throw new AccessDeniedException(
+                    "Re-authentication failed too many times. "
+                    + "You have been signed out.");
+        }
+        throw new ValidationException("The current password is incorrect.");
+    }
+
+    // ------------------------------------------------------------------
+    // Session and central authorization
+    // ------------------------------------------------------------------
 
     public synchronized void logout() {
-        AuthenticatedUser previousSession = session;
+        AuthenticatedUser previous = session;
         session = null;
-        if (previousSession != null) {
-            recordSecurityEvent(
-                    "LOGOUT", previousSession.username,
+        if (previous != null) {
+            recordSecurityEvent("LOGOUT", previous.username,
                     "User logged out");
+        }
+    }
+
+    /** Ends the session after the idle timeout. */
+    public synchronized void expireSession(int idleMinutes) {
+        AuthenticatedUser previous = session;
+        session = null;
+        if (previous != null) {
+            recordSecurityEvent("SESSION_TIMEOUT", previous.username,
+                    "Session ended after " + idleMinutes
+                    + " minutes of inactivity");
         }
     }
 
@@ -360,28 +590,133 @@ public class SQLite {
         session = null;
     }
 
-    private AppException fatalException(
-            String message, Throwable cause) {
-        invalidateSession();
-        Runnable handler = fatalErrorHandler;
-        if (handler != null) {
-            handler.run();
+    /**
+     * Re-reads the session's account so that role changes, locks and
+     * deletions take effect on the very next request.
+     */
+    private synchronized AuthenticatedUser refreshSession() {
+        AuthenticatedUser current = session;
+        if (current == null) {
+            return null;
         }
-        return new AppException(message, true, cause);
+        String revokedReason = null;
+        try (Connection conn = connect();
+                PreparedStatement statement = conn.prepareStatement(
+                        "SELECT role, locked FROM users "
+                        + "WHERE id = ? AND username = ?")) {
+            statement.setInt(1, current.id);
+            statement.setString(2, current.username);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next()) {
+                    revokedReason = "Session ended: account was deleted";
+                } else {
+                    int role = rs.getInt("role");
+                    int locked = rs.getInt("locked");
+                    if (role < 2 || role > 5 || locked != 0) {
+                        revokedReason = "Session ended: account was disabled";
+                    } else if (role != current.role) {
+                        current = new AuthenticatedUser(
+                                current.id, current.username, role);
+                        session = current;
+                    }
+                }
+            }
+        } catch (SQLException ex) {
+            throw fatalException(
+                    "Account authorization could not be verified.", ex);
+        }
+        if (revokedReason != null) {
+            session = null;
+            recordSecurityEvent("SESSION_REVOKED", current.username,
+                    revokedReason);
+            return null;
+        }
+        return current;
     }
 
-    private static long priceCents(double price) {
-        if (Double.isNaN(price) || Double.isInfinite(price)
-                || price < 0
-                || price > Validation.MAX_PRICE_CENTS / 100.0) {
-            throw new IllegalArgumentException(
-                    "Price is outside the allowed range.");
+    /**
+     * THE authorization gate for every controller operation: default deny,
+     * and every denial is written to the security log.
+     */
+    private AuthenticatedUser authorize(Permission... permissions) {
+        AuthenticatedUser current = refreshSession();
+        if (current != null) {
+            for (Permission permission : permissions) {
+                if (AccessControl.isAllowed(current.role, permission)) {
+                    return current;
+                }
+            }
         }
-        return BigDecimal.valueOf(price)
-                .setScale(2, RoundingMode.HALF_UP)
-                .movePointRight(2)
-                .longValueExact();
+        recordSecurityEvent(
+                "UNAUTHORIZED_OPERATION",
+                current == null ? ANONYMOUS : current.username,
+                "Denied operation '" + describe(permissions) + "' for "
+                + (current == null ? "an unauthenticated user"
+                        : "role " + current.role));
+        throw new AccessDeniedException(DENIED_MESSAGE);
     }
+
+    /**
+     * Authorization check for UI panels and buttons. Returns false (and logs
+     * an access-control violation) when the current role may not open it.
+     */
+    public boolean authorizeView(Permission permission, String resource) {
+        AuthenticatedUser current = refreshSession();
+        if (current != null
+                && AccessControl.isAllowed(current.role, permission)) {
+            return true;
+        }
+        recordSecurityEvent(
+                "ACCESS_VIOLATION",
+                current == null ? ANONYMOUS : current.username,
+                "Blocked attempt to open " + resource + " ("
+                + permission.getDescription() + ") by "
+                + (current == null ? "an unauthenticated user"
+                        : "role " + current.role));
+        return false;
+    }
+
+    /** Visibility check (no logging): may the current user see this? */
+    public boolean canAccess(Permission permission) {
+        AuthenticatedUser current = refreshSession();
+        return current != null
+                && AccessControl.isAllowed(current.role, permission);
+    }
+
+    public int getAuthenticatedRole() {
+        AuthenticatedUser current = refreshSession();
+        return current == null ? 0 : current.role;
+    }
+
+    /** Records an unexpected error that the UI handled safely. */
+    public void recordUnexpectedError(String errorType) {
+        try {
+            AuthenticatedUser current = session;
+            recordSecurityEvent("UNEXPECTED_ERROR",
+                    current == null ? ANONYMOUS : current.username,
+                    "Unexpected application error handled safely ("
+                    + (errorType == null ? "unknown"
+                            : errorType.replaceAll("[^A-Za-z0-9_]", ""))
+                    + "); session ended");
+        } catch (RuntimeException ignored) {
+            // Logging must never cause a second failure.
+        }
+    }
+
+    private static String describe(Permission... permissions) {
+        StringBuilder text = new StringBuilder();
+        for (Permission permission : permissions) {
+            if (text.length() > 0) {
+                text.append(" / ");
+            }
+            text.append(permission.getDescription());
+        }
+        return text.toString();
+    }
+
+    // ------------------------------------------------------------------
+    // Logging helpers
+    // ------------------------------------------------------------------
 
     private static String timestamp() {
         return Instant.now().toString();
@@ -390,13 +725,11 @@ public class SQLite {
     private static void insertLog(
             Connection conn, String event, String username,
             String description, String timestamp) throws SQLException {
-
-        String sql =
-                "INSERT INTO logs(event,username,desc,timestamp) VALUES(?,?,?,?)";
-        try (PreparedStatement statement = conn.prepareStatement(sql)) {
+        try (PreparedStatement statement = conn.prepareStatement(
+                "INSERT INTO logs(event,username,desc,timestamp) "
+                + "VALUES(?,?,?,?)")) {
             statement.setString(1, event);
-            statement.setString(
-                    2, username == null ? "<anonymous>" : username);
+            statement.setString(2, username == null ? ANONYMOUS : username);
             statement.setString(3, description);
             statement.setString(4, timestamp);
             statement.executeUpdate();
@@ -405,8 +738,7 @@ public class SQLite {
 
     private void recordSecurityEvent(
             String event, String username, String description) {
-
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
                 insertLog(conn, event, username, description, timestamp());
@@ -416,346 +748,157 @@ public class SQLite {
                 throw ex;
             }
         } catch (SQLException ex) {
-            throw fatalException(
-                    "Security event could not be recorded.", ex);
+            throw fatalException("Security event could not be recorded.", ex);
         }
     }
 
-    private void updateLoginStatus(
-            Connection conn, int userId, String time, String status)
-            throws SQLException {
-
-        String sql = "UPDATE users SET last_login_attempt_at = ?, "
-                + "last_login_status = ? WHERE id = ?";
-        try (PreparedStatement statement = conn.prepareStatement(sql)) {
-            statement.setString(1, time);
-            statement.setString(2, status);
-            statement.setInt(3, userId);
-            statement.executeUpdate();
-        }
-    }
-
-    private synchronized AuthenticatedUser requireRoles(
-            String operation, int... allowedRoles) {
-
-        AuthenticatedUser currentSession = session;
-        String revocationDescription = null;
-        String revokedUsername = null;
-        if (currentSession != null) {
-            String query = "SELECT role, locked FROM users "
-                    + "WHERE id = ? AND username = ?";
-            try (Connection conn = DriverManager.getConnection(driverURL);
-                    PreparedStatement statement =
-                            conn.prepareStatement(query)) {
-                statement.setInt(1, currentSession.id);
-                statement.setString(2, currentSession.username);
-                try (ResultSet rs = statement.executeQuery()) {
-                    if (rs.next()) {
-                        int currentRole = rs.getInt("role");
-                        int locked = rs.getInt("locked");
-                        if (currentRole >= 2 && currentRole <= 5
-                                && locked == 0) {
-                            currentSession = new AuthenticatedUser(
-                                    currentSession.id,
-                                    currentSession.username,
-                                    currentRole);
-                            session = currentSession;
-                        } else {
-                            session = null;
-                            revokedUsername = currentSession.username;
-                            revocationDescription =
-                                    "Session invalidated after account "
-                                    + "permissions changed";
-                            currentSession = null;
-                        }
-                    } else {
-                        session = null;
-                        revokedUsername = currentSession.username;
-                        revocationDescription =
-                                "Session invalidated after account deletion";
-                        currentSession = null;
-                    }
-                }
-            } catch (SQLException ex) {
-                throw fatalException(
-                        "Account authorization could not be verified.", ex);
-            }
-        }
-
-        if (revocationDescription != null) {
-            recordSecurityEvent(
-                    "SESSION_REVOKED",
-                    revokedUsername,
-                    revocationDescription);
-        }
-
-        for (int allowedRole : allowedRoles) {
-            if (currentSession != null
-                    && currentSession.role == allowedRole) {
-                return currentSession;
-            }
-        }
-
-        recordSecurityEvent(
-                "UNAUTHORIZED_OPERATION",
-                currentSession == null ? "<anonymous>"
-                        : currentSession.username,
-                "Denied operation: " + operation);
-        throw new SecurityException("Unauthorized operation.");
-    }
-
-    private void logValidationFailure(String operation) {
-        AuthenticatedUser currentSession = session;
+    /** Logs a rejected input; the reason is fixed text, never the input. */
+    private void rejectInput(String operation, ValidationException ex) {
+        AuthenticatedUser current = session;
         recordSecurityEvent(
                 "VALIDATION_FAILURE",
-                currentSession == null ? "<anonymous>"
-                        : currentSession.username,
-                "Rejected input for operation: " + operation);
+                current == null ? ANONYMOUS : current.username,
+                "Rejected input for operation: " + operation
+                + " (" + ex.getMessage() + ")");
     }
 
-    public void createNewDatabase() {
-        requireRoles("initialize-database", 5);
-        initializeDatabase();
-    }
-
-    public void createHistoryTable() {
-        requireRoles("create-history-table", 5);
-        initializeDatabase();
-    }
-
-    public void createLogsTable() {
-        requireRoles("create-security-logs-table", 5);
-        initializeDatabase();
-    }
-
-    public void createProductTable() {
-        requireRoles("create-products-table", 5);
-        initializeDatabase();
-    }
-
-    public void createUserTable() {
-        requireRoles("create-users-table", 5);
-        initializeDatabase();
-    }
-
-    public void dropHistoryTable() {
-        requireRoles("drop-history-table", 5);
-        dropTable("history");
-    }
-
-    public void dropLogsTable() {
-        requireRoles("drop-security-logs", 5);
-        throw new UnsupportedOperationException(
-                "Security logs cannot be dropped; use clearLogs instead.");
-    }
-
-    public void dropProductTable() {
-        requireRoles("drop-products-table", 5);
-        dropTable("product");
-    }
-    
-    public void dropUserTable() {
-        requireRoles("drop-users-table", 5);
-        dropTable("users");
-    }
-
-    private void dropTable(String tableName) {
-        String[] allowedTables = {"history", "product", "users"};
-        if (!Arrays.asList(allowedTables).contains(tableName)) {
-            throw new IllegalArgumentException("Invalid table name.");
+    private AppException fatalException(String message, Throwable cause) {
+        invalidateSession();
+        Runnable handler = fatalErrorHandler;
+        if (handler != null) {
+            handler.run();
         }
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
-            conn.setAutoCommit(false);
-            try (Statement statement = conn.createStatement()) {
-                insertLog(conn, "DATABASE_TABLE_DROPPED",
-                        session.username,
-                        "Administrator dropped table " + tableName,
-                        timestamp());
-                statement.execute("DROP TABLE IF EXISTS " + tableName);
-                conn.commit();
-            } catch (SQLException ex) {
-                rollback(conn, ex);
-                throw ex;
+        return new AppException(message, true, cause);
+    }
+
+    // ------------------------------------------------------------------
+    // Products
+    // ------------------------------------------------------------------
+
+    public ArrayList<Product> getProduct() {
+        authorize(Permission.VIEW_PRODUCTS);
+        ArrayList<Product> products = new ArrayList<Product>();
+        try (Connection conn = connect();
+                PreparedStatement statement = conn.prepareStatement(
+                        "SELECT id, name, stock, price FROM product "
+                        + "ORDER BY id");
+                ResultSet rs = statement.executeQuery()) {
+            while (rs.next()) {
+                products.add(new Product(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getInt("stock"),
+                        storedPriceCents(rs.getDouble("price"))));
             }
+            return products;
         } catch (SQLException ex) {
-            throw new AppException(
-                    "Database table could not be dropped.", false, ex);
+            throw new AppException("Products could not be loaded.", false, ex);
         }
-    }
-    
-    @Deprecated
-    public void addHistory(
-            String username, String name, int quantity, String ignoredTime) {
-        AuthenticatedUser currentSession = requireRoles("purchase-product", 2);
-        if (!currentSession.username.equals(username)) {
-            recordSecurityEvent(
-                    "UNAUTHORIZED_OPERATION", currentSession.username,
-                    "Denied purchase-history insertion for another account");
-            throw new SecurityException("Unauthorized operation.");
-        }
-        purchaseProduct(name, quantity);
-    }
-
-    public void addLogs(
-            String event, String username, String description, String time) {
-        requireRoles("add-security-log", 5);
-        if (event == null || username == null || description == null
-                || time == null) {
-            logValidationFailure("add-security-log");
-            throw new IllegalArgumentException("Log fields are required.");
-        }
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
-            conn.setAutoCommit(false);
-            try {
-                insertLog(conn, event, username, description, time);
-                conn.commit();
-            } catch (SQLException ex) {
-                rollback(conn, ex);
-                throw ex;
-            }
-        } catch (SQLException ex) {
-            throw new AppException("Log entry could not be added.", false, ex);
-        }
-    }
-
-    public void addProduct(String name, int stock, double price) {
-        requireRoles("add-product", 3, 4, 5);
-        long cents;
-        try {
-            cents = priceCents(price);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("add-product");
-            throw new IllegalArgumentException(
-                    "Price is outside the allowed range.", ex);
-        }
-        addProduct(name, stock, cents);
     }
 
     public void addProduct(String name, String stock, String price) {
-        requireRoles("add-product", 3, 4, 5);
+        AuthenticatedUser user = authorize(Permission.ADD_PRODUCT);
         int parsedStock;
         long parsedPrice;
         try {
             Validation.productName(name);
-            parsedStock = Validation.integer(
-                    stock, 0, Validation.MAX_STOCK);
+            parsedStock = Validation.integer(stock, 0, Validation.MAX_STOCK);
             parsedPrice = Validation.price(price);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("add-product");
-            throw ex;
-        }
-        addProduct(name, parsedStock, parsedPrice);
-    }
-
-    public void addProduct(String name, int stock, long priceCents) {
-        requireRoles("add-product", 3, 4, 5);
-        try {
-            Validation.productName(name);
-            Validation.integer(
-                    String.valueOf(stock), 0, Validation.MAX_STOCK);
-            validatePriceCents(priceCents);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("add-product");
+        } catch (ValidationException ex) {
+            rejectInput("add-product", ex);
             throw ex;
         }
 
-        String sql = "INSERT INTO product(name,stock,price) VALUES(?,?,?)";
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
-            try (PreparedStatement statement = conn.prepareStatement(sql)) {
-                statement.setString(1, name);
-                statement.setInt(2, stock);
-                statement.setDouble(3, priceCents / 100.0);
-                statement.executeUpdate();
-                insertLog(conn, "PRODUCT_CREATED",
-                        session.username, "Product created", timestamp());
-                conn.commit();
-            } catch (SQLException ex) {
-                rollback(conn, ex);
-                throw ex;
-            }
-        } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "PRODUCT_CREATE_FAILURE", session.username,
-                    "Product creation failed");
-            throw new AppException(
-                    "Product could not be added.", false, ex);
-        }
-    }
-
-    public void updateProduct(
-            String originalName, String name, int stock, long priceCents) {
-        requireRoles("edit-product", 3, 4, 5);
-        try {
-            Validation.productName(originalName);
-            Validation.productName(name);
-            Validation.integer(
-                    String.valueOf(stock), 0, Validation.MAX_STOCK);
-            validatePriceCents(priceCents);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("edit-product");
-            throw ex;
-        }
-
-        String sql = "UPDATE product SET name = ?, stock = ?, price = ? "
-                + "WHERE name = ?";
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
-            conn.setAutoCommit(false);
-            try (PreparedStatement statement = conn.prepareStatement(sql)) {
-                statement.setString(1, name);
-                statement.setInt(2, stock);
-                statement.setDouble(3, priceCents / 100.0);
-                statement.setString(4, originalName);
-                if (statement.executeUpdate() != 1) {
-                    insertLog(conn, "PRODUCT_EDIT_FAILURE",
-                            session.username, "Product was not found",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "Product no longer exists.");
+            try {
+                if (productExists(conn, name, null)) {
+                    conn.rollback();
+                    throw new ValidationException(
+                            "A product with that name already exists.");
                 }
-                insertLog(conn, "PRODUCT_UPDATED",
-                        session.username, "Product updated", timestamp());
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "INSERT INTO product(name,stock,price) "
+                        + "VALUES(?,?,?)")) {
+                    statement.setString(1, name);
+                    statement.setInt(2, parsedStock);
+                    statement.setDouble(3, parsedPrice / 100.0);
+                    statement.executeUpdate();
+                }
+                insertLog(conn, "PRODUCT_CREATED", user.username,
+                        "Product created", timestamp());
                 conn.commit();
             } catch (SQLException ex) {
                 rollback(conn, ex);
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "PRODUCT_EDIT_FAILURE", session.username,
-                    "Product update failed");
-            throw new AppException(
-                    "Product could not be updated.", false, ex);
+            recordSecurityEvent("PRODUCT_CREATE_FAILURE", user.username,
+                    "Product creation failed");
+            throw new AppException("Product could not be added.", false, ex);
         }
     }
 
     public void updateProduct(
             String originalName, String name, String stock, String price) {
-        requireRoles("edit-product", 3, 4, 5);
+        AuthenticatedUser user = authorize(Permission.EDIT_PRODUCT);
         int parsedStock;
         long parsedPrice;
         try {
-            parsedStock = Validation.integer(
-                    stock, 0, Validation.MAX_STOCK);
+            Validation.productName(originalName);
+            Validation.productName(name);
+            parsedStock = Validation.integer(stock, 0, Validation.MAX_STOCK);
             parsedPrice = Validation.price(price);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("edit-product");
+        } catch (ValidationException ex) {
+            rejectInput("edit-product", ex);
             throw ex;
         }
-        updateProduct(originalName, name, parsedStock, parsedPrice);
+
+        try (Connection conn = connect()) {
+            conn.setAutoCommit(false);
+            try {
+                if (productExists(conn, name, originalName)) {
+                    conn.rollback();
+                    throw new ValidationException(
+                            "A product with that name already exists.");
+                }
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "UPDATE product SET name = ?, stock = ?, price = ? "
+                        + "WHERE name = ?")) {
+                    statement.setString(1, name);
+                    statement.setInt(2, parsedStock);
+                    statement.setDouble(3, parsedPrice / 100.0);
+                    statement.setString(4, originalName);
+                    if (statement.executeUpdate() != 1) {
+                        conn.rollback();
+                        throw new ValidationException(
+                                "Product no longer exists.");
+                    }
+                }
+                insertLog(conn, "PRODUCT_UPDATED", user.username,
+                        "Product updated", timestamp());
+                conn.commit();
+            } catch (SQLException ex) {
+                rollback(conn, ex);
+                throw ex;
+            }
+        } catch (SQLException ex) {
+            recordSecurityEvent("PRODUCT_EDIT_FAILURE", user.username,
+                    "Product update failed");
+            throw new AppException("Product could not be updated.", false, ex);
+        }
     }
 
     public void deleteProduct(String name) {
-        requireRoles("delete-product", 3, 4, 5);
+        AuthenticatedUser user = authorize(Permission.DELETE_PRODUCT);
         try {
             Validation.productName(name);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("delete-product");
+        } catch (ValidationException ex) {
+            rejectInput("delete-product", ex);
             throw ex;
         }
 
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
                 int productId = -1;
@@ -769,11 +912,9 @@ public class SQLite {
                     }
                 }
                 if (productId < 0) {
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "Product no longer exists.");
+                    conn.rollback();
+                    throw new ValidationException("Product no longer exists.");
                 }
-
                 try (PreparedStatement findHistory = conn.prepareStatement(
                         "SELECT 1 FROM history WHERE product_id = ? "
                         + "OR (product_id IS NULL AND name = ?) LIMIT 1")) {
@@ -782,50 +923,48 @@ public class SQLite {
                     try (ResultSet rs = findHistory.executeQuery()) {
                         if (rs.next()) {
                             insertLog(conn, "PRODUCT_DELETE_REJECTED",
-                                    session.username,
-                                    "Product is referenced by purchase history",
-                                    timestamp());
+                                    user.username,
+                                    "Product is referenced by purchase "
+                                    + "history", timestamp());
                             conn.commit();
-                            throw new IllegalArgumentException(
-                                    "Product with purchase history cannot be deleted.");
+                            throw new ValidationException(
+                                    "Product with purchase history cannot "
+                                    + "be deleted.");
                         }
                     }
                 }
-
                 try (PreparedStatement delete = conn.prepareStatement(
                         "DELETE FROM product WHERE id = ?")) {
                     delete.setInt(1, productId);
                     delete.executeUpdate();
                 }
-                insertLog(conn, "PRODUCT_DELETED",
-                        session.username, "Product deleted", timestamp());
+                insertLog(conn, "PRODUCT_DELETED", user.username,
+                        "Product deleted", timestamp());
                 conn.commit();
             } catch (SQLException ex) {
                 rollback(conn, ex);
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "PRODUCT_DELETE_FAILURE", session.username,
+            recordSecurityEvent("PRODUCT_DELETE_FAILURE", user.username,
                     "Product deletion failed");
-            throw new AppException(
-                    "Product could not be deleted.", false, ex);
+            throw new AppException("Product could not be deleted.", false, ex);
         }
     }
 
-    public long purchaseProduct(String productName, int quantity) {
-        AuthenticatedUser currentSession = requireRoles(
-                "purchase-product", 2);
+    public long purchaseProduct(String productName, String quantity) {
+        AuthenticatedUser user = authorize(Permission.PURCHASE_PRODUCT);
+        int parsedQuantity;
         try {
             Validation.productName(productName);
-            Validation.integer(
-                    String.valueOf(quantity), 1, Validation.MAX_STOCK);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("purchase-product");
+            parsedQuantity = Validation.integer(
+                    quantity, 1, Validation.MAX_STOCK);
+        } catch (ValidationException ex) {
+            rejectInput("purchase-product", ex);
             throw ex;
         }
 
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
                 int productId;
@@ -836,37 +975,36 @@ public class SQLite {
                     find.setString(1, productName);
                     try (ResultSet rs = find.executeQuery()) {
                         if (!rs.next()) {
-                            insertLog(conn, "PURCHASE_REJECTED",
-                                    currentSession.username,
+                            insertLog(conn, "PURCHASE_REJECTED", user.username,
                                     "Requested product was not found",
                                     timestamp());
                             conn.commit();
-                            throw new IllegalArgumentException(
+                            throw new ValidationException(
                                     "Product no longer exists.");
                         }
                         productId = rs.getInt("id");
                         stock = rs.getInt("stock");
-                        priceCents = priceCents(rs.getDouble("price"));
+                        priceCents = storedPriceCents(rs.getDouble("price"));
                     }
                 }
 
-                if (stock < quantity) {
-                    insertLog(conn, "PURCHASE_REJECTED",
-                            currentSession.username,
+                if (stock < parsedQuantity) {
+                    insertLog(conn, "PURCHASE_REJECTED", user.username,
                             "Insufficient product stock", timestamp());
                     conn.commit();
-                    throw new IllegalArgumentException(
-                            "There is not enough stock to complete the purchase.");
+                    throw new ValidationException(
+                            "There is not enough stock to complete the "
+                            + "purchase.");
                 }
 
                 long totalCents = Math.multiplyExact(
-                        priceCents, (long) quantity);
+                        priceCents, (long) parsedQuantity);
                 try (PreparedStatement update = conn.prepareStatement(
                         "UPDATE product SET stock = stock - ? "
                         + "WHERE id = ? AND stock >= ?")) {
-                    update.setInt(1, quantity);
+                    update.setInt(1, parsedQuantity);
                     update.setInt(2, productId);
-                    update.setInt(3, quantity);
+                    update.setInt(3, parsedQuantity);
                     if (update.executeUpdate() != 1) {
                         throw new SQLException(
                                 "Product stock changed during purchase.");
@@ -876,17 +1014,16 @@ public class SQLite {
                         "INSERT INTO history(username,name,stock,timestamp,"
                         + "user_id,product_id,unit_price_cents) "
                         + "VALUES(?,?,?,?,?,?,?)")) {
-                    insert.setString(1, currentSession.username);
+                    insert.setString(1, user.username);
                     insert.setString(2, productName);
-                    insert.setInt(3, quantity);
+                    insert.setInt(3, parsedQuantity);
                     insert.setString(4, timestamp());
-                    insert.setInt(5, currentSession.id);
+                    insert.setInt(5, user.id);
                     insert.setInt(6, productId);
                     insert.setLong(7, priceCents);
                     insert.executeUpdate();
                 }
-                insertLog(conn, "PURCHASE_COMPLETED",
-                        currentSession.username,
+                insertLog(conn, "PURCHASE_COMPLETED", user.username,
                         "Product purchase completed", timestamp());
                 conn.commit();
                 return totalCents;
@@ -895,171 +1032,96 @@ public class SQLite {
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "PURCHASE_FAILURE", currentSession.username,
+            recordSecurityEvent("PURCHASE_FAILURE", user.username,
                     "Purchase could not be completed");
-            throw new AppException(
-                    "Purchase could not be completed.", false, ex);
+            throw new AppException("Purchase could not be completed.", false,
+                    ex);
         }
     }
 
-    public long purchaseProduct(String productName, String quantity) {
-        requireRoles("purchase-product", 2);
-        int parsedQuantity;
-        try {
-            parsedQuantity = Validation.integer(
-                    quantity, 1, Validation.MAX_STOCK);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("purchase-product");
-            throw ex;
-        }
-        return purchaseProduct(productName, parsedQuantity);
-    }
-
-    public void addUser(String username, String password) {
-        char[] passwordChars = password == null
-                ? null : password.toCharArray();
-        try {
-            addUser(username, passwordChars, passwordChars);
-        } finally {
-            if (passwordChars != null) {
-                Arrays.fill(passwordChars, '\0');
+    private static boolean productExists(
+            Connection conn, String name, String exceptName)
+            throws SQLException {
+        try (PreparedStatement statement = conn.prepareStatement(
+                "SELECT name FROM product WHERE name = ? COLLATE NOCASE")) {
+            statement.setString(1, name);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    if (exceptName == null
+                            || !exceptName.equals(rs.getString("name"))) {
+                        return true;
+                    }
+                }
             }
         }
+        return false;
     }
 
-    public void addUser(
-            String username, char[] password, char[] confirmation) {
-        createUser(username, password, confirmation, 2, false);
-    }
-
-    public void addUser(String username, String password, int role) {
-        requireRoles("add-user", 5);
-        char[] passwordChars = password == null
-                ? null : password.toCharArray();
-        try {
-            createUser(username, passwordChars, passwordChars, role, true);
-        } finally {
-            if (passwordChars != null) {
-                Arrays.fill(passwordChars, '\0');
-            }
+    /** Converts a stored REAL price to cents without trusting its range. */
+    private static long storedPriceCents(double price) {
+        if (Double.isNaN(price) || Double.isInfinite(price) || price < 0
+                || price > Validation.MAX_PRICE_CENTS / 100.0) {
+            return 0;
         }
+        return BigDecimal.valueOf(price)
+                .setScale(2, RoundingMode.HALF_UP)
+                .movePointRight(2)
+                .longValueExact();
     }
 
-    public void addUser(
-            String username, char[] password,
-            char[] confirmation, int role) {
-        requireRoles("add-user", 5);
-        createUser(username, password, confirmation, role, true);
-    }
-
-    private void createUser(
-            String username,
-            char[] password,
-            char[] confirmation,
-            int role,
-            boolean administratorCreated) {
-
-        try {
-            Validation.username(username);
-            Validation.password(password, confirmation);
-            Validation.role(role);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure(
-                    administratorCreated ? "add-user" : "register");
-            throw ex;
-        }
-
-        String sql = "INSERT INTO users(username,password,role) "
-                + "VALUES(?,?,?)";
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
-            conn.setAutoCommit(false);
-            try (PreparedStatement statement = conn.prepareStatement(sql)) {
-                statement.setString(1, username);
-                statement.setString(2, PasswordHasher.hash(password));
-                statement.setInt(3, role);
-                statement.executeUpdate();
-                insertLog(conn,
-                        administratorCreated
-                                ? "USER_CREATED_BY_ADMIN" : "USER_REGISTERED",
-                        administratorCreated ? session.username : username,
-                        administratorCreated
-                                ? "Administrator created an account"
-                                : "New account registered",
-                        timestamp());
-                conn.commit();
-            } catch (SQLException ex) {
-                rollback(conn, ex);
-                throw ex;
-            }
-        } catch (SQLException ex) {
-            recordSecurityEvent(
-                    administratorCreated
-                            ? "USER_CREATION_FAILURE"
-                            : "USER_REGISTRATION_FAILURE",
-                    administratorCreated ? session.username : username,
-                    "Account creation failed");
-            throw new AppException(
-                    administratorCreated
-                            ? "User creation could not be completed."
-                            : "Registration could not be completed.",
-                    false, ex);
-        }
-    }
+    // ------------------------------------------------------------------
+    // Purchase history
+    // ------------------------------------------------------------------
 
     public ArrayList<History> getHistory() {
-        AuthenticatedUser currentSession = requireRoles(
-                "view-history", 2, 4, 5);
-        boolean ownHistoryOnly = currentSession.role == 2;
+        AuthenticatedUser user = authorize(
+                Permission.VIEW_OWN_HISTORY, Permission.VIEW_ALL_HISTORY);
+        boolean ownHistoryOnly = !AccessControl.isAllowed(
+                user.role, Permission.VIEW_ALL_HISTORY);
         String sql = "SELECT id, user_id, product_id, username, name, "
                 + "stock, unit_price_cents, timestamp FROM history"
                 + (ownHistoryOnly
-                        ? " WHERE user_id = ? OR (user_id IS NULL AND username = ?)"
+                        ? " WHERE user_id = ? OR (user_id IS NULL "
+                        + "AND username = ? COLLATE NOCASE)"
                         : "")
                 + " ORDER BY timestamp DESC, id DESC";
         ArrayList<History> histories = new ArrayList<History>();
-        try (Connection conn = DriverManager.getConnection(driverURL);
+        try (Connection conn = connect();
                 PreparedStatement statement = conn.prepareStatement(sql)) {
             if (ownHistoryOnly) {
-                statement.setInt(1, currentSession.id);
-                statement.setString(2, currentSession.username);
+                statement.setInt(1, user.id);
+                statement.setString(2, user.username);
             }
             try (ResultSet rs = statement.executeQuery()) {
                 while (rs.next()) {
-                    int userId = rs.getInt("user_id");
-                    Integer historyUserId = rs.wasNull()
-                            ? null : Integer.valueOf(userId);
-                    int productId = rs.getInt("product_id");
-                    Integer historyProductId = rs.wasNull()
-                            ? null : Integer.valueOf(productId);
-                    long unitPriceCents = rs.getLong("unit_price_cents");
-                    Long historyPrice = rs.wasNull()
-                            ? null : Long.valueOf(unitPriceCents);
+                    Integer userId = getNullableInt(rs, "user_id");
+                    Integer productId = getNullableInt(rs, "product_id");
+                    long unitPrice = rs.getLong("unit_price_cents");
+                    Long price = rs.wasNull() ? null : Long.valueOf(unitPrice);
                     histories.add(new History(
                             rs.getInt("id"),
-                            historyUserId == null ? 0 : historyUserId,
-                            historyProductId == null
-                                    ? 0 : historyProductId,
+                            userId == null ? 0 : userId,
+                            productId == null ? 0 : productId,
                             rs.getString("username"),
                             rs.getString("name"),
                             rs.getInt("stock"),
-                            historyPrice,
+                            price,
                             rs.getString("timestamp")));
                 }
             }
             return histories;
         } catch (SQLException ex) {
-            throw new AppException(
-                    "Purchase history could not be loaded.", false, ex);
+            throw new AppException("Purchase history could not be loaded.",
+                    false, ex);
         }
     }
 
     public ArrayList<History> searchHistory(String query) {
-        requireRoles("search-history", 2, 4, 5);
+        authorize(Permission.VIEW_OWN_HISTORY, Permission.VIEW_ALL_HISTORY);
         try {
             Validation.search(query);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("search-history");
+        } catch (ValidationException ex) {
+            rejectInput("search-history", ex);
             throw ex;
         }
 
@@ -1074,14 +1136,19 @@ public class SQLite {
         return matches;
     }
 
+    // ------------------------------------------------------------------
+    // Security logs
+    // ------------------------------------------------------------------
+
     public ArrayList<Logs> getLogs() {
-        requireRoles("view-security-logs", 5);
+        authorize(Permission.VIEW_LOGS);
         ArrayList<Logs> logs = new ArrayList<Logs>();
-        String sql = "SELECT id, event, username, desc, timestamp "
-                + "FROM logs ORDER BY timestamp DESC, id DESC";
-        try (Connection conn = DriverManager.getConnection(driverURL);
-                Statement statement = conn.createStatement();
-                ResultSet rs = statement.executeQuery(sql)) {
+        try (Connection conn = connect();
+                PreparedStatement statement = conn.prepareStatement(
+                        "SELECT id, event, username, desc, timestamp "
+                        + "FROM logs WHERE archived = 0 "
+                        + "ORDER BY timestamp DESC, id DESC");
+                ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 logs.add(new Logs(
                         rs.getInt("id"),
@@ -1092,58 +1159,129 @@ public class SQLite {
             }
             return logs;
         } catch (SQLException ex) {
-            throw new AppException(
-                    "Security logs could not be loaded.", false, ex);
+            throw new AppException("Security logs could not be loaded.",
+                    false, ex);
         }
     }
 
-    public void clearLogs() {
-        AuthenticatedUser currentSession = requireRoles(
-                "clear-security-logs", 5);
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+    /**
+     * "Clear" for the administrator: entries are hidden from the log view
+     * but RETAINED (append-only audit trail); nothing is ever deleted.
+     */
+    public int archiveLogs() {
+        AuthenticatedUser user = authorize(Permission.ARCHIVE_LOGS);
+        String timestamp = timestamp();
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
-            try (Statement statement = conn.createStatement()) {
-                statement.executeUpdate("DELETE FROM logs");
-                insertLog(conn, "SECURITY_LOGS_CLEARED",
-                        currentSession.username,
-                        "Administrator cleared security logs", timestamp());
+            try {
+                int archived;
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "UPDATE logs SET archived = 1, archived_at = ?, "
+                        + "archived_by = ? WHERE archived = 0")) {
+                    statement.setString(1, timestamp);
+                    statement.setString(2, user.username);
+                    archived = statement.executeUpdate();
+                }
+                insertLog(conn, "SECURITY_LOGS_ARCHIVED", user.username,
+                        "Administrator archived " + archived
+                        + " log entries (retained for audit)", timestamp);
+                conn.commit();
+                return archived;
+            } catch (SQLException ex) {
+                rollback(conn, ex);
+                throw ex;
+            }
+        } catch (SQLException ex) {
+            throw new AppException("Security logs could not be archived.",
+                    false, ex);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // User management
+    // ------------------------------------------------------------------
+
+    /** Self-registration: always creates a Client (role 2). */
+    public void addUser(
+            String username, char[] password, char[] confirmation) {
+        createUser(null, username, password, confirmation,
+                AccessControl.CLIENT);
+    }
+
+    /** Administrator-created account (roles 2-4 only). */
+    public void addUser(String username, char[] password,
+            char[] confirmation, int role) {
+        AuthenticatedUser user = authorize(Permission.ADD_USER);
+        if (!AccessControl.isAssignableOnCreate(role)) {
+            recordSecurityEvent("UNAUTHORIZED_OPERATION", user.username,
+                    "Denied creating an account with role " + role);
+            throw new AccessDeniedException(DENIED_MESSAGE);
+        }
+        createUser(user, username, password, confirmation, role);
+    }
+
+    private void createUser(AuthenticatedUser admin, String username,
+            char[] password, char[] confirmation, int role) {
+        String operation = admin == null ? "register" : "add-user";
+        try {
+            Validation.username(username);
+            Validation.password(password, confirmation);
+            Validation.role(role);
+        } catch (ValidationException ex) {
+            rejectInput(operation, ex);
+            throw ex;
+        }
+
+        String actor = admin == null ? username : admin.username;
+        try (Connection conn = connect()) {
+            conn.setAutoCommit(false);
+            try {
+                if (admin != null && findAccount(conn, username) != null) {
+                    conn.rollback();
+                    throw new ValidationException(
+                            "That username is already taken.");
+                }
+                try (PreparedStatement statement = conn.prepareStatement(
+                        "INSERT INTO users(username,password,role) "
+                        + "VALUES(?,?,?)")) {
+                    statement.setString(1, username);
+                    statement.setString(2, PasswordHasher.hash(password));
+                    statement.setInt(3, role);
+                    statement.executeUpdate();
+                }
+                insertLog(conn,
+                        admin == null ? "USER_REGISTERED"
+                                : "USER_CREATED_BY_ADMIN",
+                        actor,
+                        admin == null ? "New client account registered"
+                                : "Administrator created an account with "
+                                + "role " + role,
+                        timestamp());
                 conn.commit();
             } catch (SQLException ex) {
                 rollback(conn, ex);
                 throw ex;
             }
         } catch (SQLException ex) {
+            recordSecurityEvent(
+                    admin == null ? "USER_REGISTRATION_FAILURE"
+                            : "USER_CREATION_FAILURE",
+                    actor, "Account creation failed");
             throw new AppException(
-                    "Security logs could not be cleared.", false, ex);
-        }
-    }
-
-    public ArrayList<Product> getProduct() {
-        requireRoles("view-products", 2, 3, 4, 5);
-        ArrayList<Product> products = new ArrayList<Product>();
-        String sql = "SELECT id, name, stock, price FROM product "
-                + "ORDER BY id";
-        try (Connection conn = DriverManager.getConnection(driverURL);
-                Statement statement = conn.createStatement();
-                ResultSet rs = statement.executeQuery(sql)) {
-            while (rs.next()) {
-                products.add(mapProduct(rs));
-            }
-            return products;
-        } catch (SQLException ex) {
-            throw new AppException(
-                    "Products could not be loaded.", false, ex);
+                    admin == null ? "Registration could not be completed."
+                            : "User creation could not be completed.",
+                    false, ex);
         }
     }
 
     public ArrayList<User> getUsers() {
-        requireRoles("view-users", 5);
+        authorize(Permission.VIEW_USERS);
         ArrayList<User> users = new ArrayList<User>();
-        String sql = "SELECT id, username, role, locked, failed_attempts "
-                + "FROM users ORDER BY id";
-        try (Connection conn = DriverManager.getConnection(driverURL);
-                Statement statement = conn.createStatement();
-                ResultSet rs = statement.executeQuery(sql)) {
+        try (Connection conn = connect();
+                PreparedStatement statement = conn.prepareStatement(
+                        "SELECT id, username, role, locked, failed_attempts "
+                        + "FROM users ORDER BY id");
+                ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 users.add(new User(
                         rs.getInt("id"),
@@ -1154,181 +1292,102 @@ public class SQLite {
             }
             return users;
         } catch (SQLException ex) {
-            throw new AppException(
-                    "Users could not be loaded.", false, ex);
+            throw new AppException("Users could not be loaded.", false, ex);
         }
     }
 
-    public void updateUserRole(String username, int role) {
-        AuthenticatedUser currentSession = requireRoles(
-                "edit-user-role", 5);
+    public void updateUserRole(
+            String username, int role, char[] currentPassword) {
+        AuthenticatedUser user = authorize(Permission.EDIT_USER_ROLE);
         validateUserName(username, "edit-user-role");
         try {
             Validation.role(role);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("edit-user-role");
+        } catch (ValidationException ex) {
+            rejectInput("edit-user-role", ex);
             throw ex;
         }
+        if (!AccessControl.isAssignableOnEdit(role)) {
+            recordSecurityEvent("UNAUTHORIZED_OPERATION", user.username,
+                    "Denied assigning role " + role
+                    + " (administrators may assign roles 1-4 only)");
+            throw new AccessDeniedException(DENIED_MESSAGE);
+        }
+        requireReauthentication(user, currentPassword, "changing a role");
 
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
-                int targetId;
-                int oldRole;
-                Integer oldRoleBeforeLock;
-                int oldLocked;
-                try (PreparedStatement find = conn.prepareStatement(
-                        "SELECT id, role, locked, role_before_lock "
-                        + "FROM users WHERE username = ?")) {
-                    find.setString(1, username);
-                    try (ResultSet rs = find.executeQuery()) {
-                        if (!rs.next()) {
-                            conn.commit();
-                            throw new IllegalArgumentException(
-                                    "User no longer exists.");
-                        }
-                        targetId = rs.getInt("id");
-                        oldRole = rs.getInt("role");
-                        oldLocked = rs.getInt("locked");
-                        oldRoleBeforeLock =
-                                getNullableInt(rs, "role_before_lock");
-                    }
-                }
-                if (targetId == currentSession.id && role != 5) {
-                    insertLog(conn, "USER_ROLE_CHANGE_REJECTED",
-                            currentSession.username,
-                            "Administrator cannot demote their own account",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "You cannot remove your own administrator role.");
-                }
-                if (oldRole == 5 && role != 5
-                        && countAdministrators(conn) <= 1) {
-                    insertLog(conn, "USER_ROLE_CHANGE_REJECTED",
-                            currentSession.username,
-                            "Cannot remove the last administrator",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "At least one administrator must remain.");
-                }
-                Integer roleBeforeLock = role == 1
-                        ? (oldLocked == 0 && oldRole >= 2 && oldRole <= 5
-                                ? Integer.valueOf(oldRole)
-                                : oldRoleBeforeLock)
+                Account target = requireManageableTarget(
+                        conn, user, username, "USER_ROLE_CHANGE_REJECTED");
+                Integer roleBeforeLock = role == AccessControl.DISABLED
+                        ? (target.locked == 0 && target.role >= 2
+                                ? Integer.valueOf(target.role)
+                                : target.roleBeforeLock)
                         : null;
                 try (PreparedStatement update = conn.prepareStatement(
                         "UPDATE users SET role = ?, locked = ?, "
                         + "role_before_lock = ?, failed_attempts = 0 "
                         + "WHERE id = ?")) {
                     update.setInt(1, role);
-                    update.setInt(2, role == 1 ? 1 : 0);
-                    if (roleBeforeLock == null) {
-                        update.setNull(3, java.sql.Types.INTEGER);
-                    } else {
-                        update.setInt(3, roleBeforeLock.intValue());
-                    }
-                    update.setInt(4, targetId);
+                    update.setInt(2, role == AccessControl.DISABLED ? 1 : 0);
+                    setNullableInt(update, 3, roleBeforeLock);
+                    update.setInt(4, target.id);
                     update.executeUpdate();
                 }
-                insertLog(conn, "USER_ROLE_CHANGED",
-                        currentSession.username,
-                        "Account role changed", timestamp());
+                insertLog(conn, "USER_ROLE_CHANGED", user.username,
+                        "Account role changed from " + target.role + " to "
+                        + role, timestamp());
                 conn.commit();
             } catch (SQLException ex) {
                 rollback(conn, ex);
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "USER_ROLE_CHANGE_FAILURE", currentSession.username,
+            recordSecurityEvent("USER_ROLE_CHANGE_FAILURE", user.username,
                     "Account role change failed");
-            throw new AppException(
-                    "User role could not be changed.", false, ex);
+            throw new AppException("User role could not be changed.", false,
+                    ex);
         }
     }
 
     public void setUserLocked(String username, boolean locked) {
-        AuthenticatedUser currentSession = requireRoles(
-                locked ? "lock-user" : "unlock-user", 5);
+        AuthenticatedUser user = authorize(
+                locked ? Permission.LOCK_USER : Permission.UNLOCK_USER);
         validateUserName(username, locked ? "lock-user" : "unlock-user");
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
-                int targetId;
-                int role;
-                int isLocked;
-                Integer roleBeforeLock;
-                try (PreparedStatement find = conn.prepareStatement(
-                        "SELECT id, role, locked, role_before_lock "
-                        + "FROM users WHERE username = ?")) {
-                    find.setString(1, username);
-                    try (ResultSet rs = find.executeQuery()) {
-                        if (!rs.next()) {
-                            conn.commit();
-                            throw new IllegalArgumentException(
-                                    "User no longer exists.");
-                        }
-                        targetId = rs.getInt("id");
-                        role = rs.getInt("role");
-                        isLocked = rs.getInt("locked");
-                        roleBeforeLock =
-                                getNullableInt(rs, "role_before_lock");
-                    }
-                }
-                if (targetId == currentSession.id) {
-                    insertLog(conn, "ACCOUNT_LOCK_CHANGE_REJECTED",
-                            currentSession.username,
-                            "Administrator cannot lock their own account",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "You cannot lock or unlock your own account.");
-                }
-                if (locked && role == 5
-                        && countActiveAdministrators(conn) <= 1) {
-                    insertLog(conn, "ACCOUNT_LOCK_CHANGE_REJECTED",
-                            currentSession.username,
-                            "Cannot lock the last active administrator",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "At least one active administrator must remain.");
-                }
-                if ((locked ? 1 : 0) == isLocked) {
-                    conn.commit();
+                Account target = requireManageableTarget(
+                        conn, user, username, "ACCOUNT_LOCK_CHANGE_REJECTED");
+                if ((locked ? 1 : 0) == target.locked) {
+                    conn.rollback();
                     return;
                 }
-                if (!locked && roleBeforeLock == null) {
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "The original role is not recorded. "
-                            + "Use Edit Role to choose the account's "
-                            + "intended role before unlocking it.");
+                if (!locked && target.roleBeforeLock == null) {
+                    conn.rollback();
+                    throw new ValidationException(
+                            "The original role is not recorded. Use Edit "
+                            + "Role to choose the account's role instead.");
                 }
-                int resultingRole = locked ? 1 : roleBeforeLock.intValue();
+                int resultingRole = locked ? AccessControl.DISABLED
+                        : target.roleBeforeLock.intValue();
                 Integer resultingRoleBeforeLock =
-                        locked && role >= 2 && role <= 5
-                                ? Integer.valueOf(role) : null;
+                        locked && target.role >= 2 && target.role <= 4
+                                ? Integer.valueOf(target.role) : null;
                 try (PreparedStatement update = conn.prepareStatement(
                         "UPDATE users SET locked = ?, role = ?, "
                         + "role_before_lock = ?, failed_attempts = 0 "
                         + "WHERE id = ?")) {
                     update.setInt(1, locked ? 1 : 0);
                     update.setInt(2, resultingRole);
-                    if (resultingRoleBeforeLock == null) {
-                        update.setNull(3, java.sql.Types.INTEGER);
-                    } else {
-                        update.setInt(3, resultingRoleBeforeLock.intValue());
-                    }
-                    update.setInt(4, targetId);
+                    setNullableInt(update, 3, resultingRoleBeforeLock);
+                    update.setInt(4, target.id);
                     update.executeUpdate();
                 }
-                insertLog(conn,
-                        locked ? "ACCOUNT_LOCKED" : "ACCOUNT_UNLOCKED",
-                        currentSession.username,
-                        "Administrator changed account lock status",
+                insertLog(conn, locked ? "ACCOUNT_LOCKED" : "ACCOUNT_UNLOCKED",
+                        user.username,
+                        locked ? "Administrator disabled an account"
+                                : "Administrator re-enabled an account",
                         timestamp());
                 conn.commit();
             } catch (SQLException ex) {
@@ -1337,179 +1396,101 @@ public class SQLite {
             }
         } catch (SQLException ex) {
             recordSecurityEvent(
-                    locked ? "ACCOUNT_LOCK_FAILURE"
-                            : "ACCOUNT_UNLOCK_FAILURE",
-                    currentSession.username,
-                    "Account lock status could not be changed");
-            throw new AppException(
-                    "Account lock status could not be changed.", false, ex);
+                    locked ? "ACCOUNT_LOCK_FAILURE" : "ACCOUNT_UNLOCK_FAILURE",
+                    user.username, "Account lock status could not be changed");
+            throw new AppException("Account lock status could not be changed.",
+                    false, ex);
         }
     }
 
     public void changeUserPassword(
             String username, char[] currentPassword,
             char[] password, char[] confirmation) {
-        AuthenticatedUser currentSession = requireRoles(
-                "change-user-password", 5);
+        AuthenticatedUser user = authorize(Permission.CHANGE_USER_PASSWORD);
         validateUserName(username, "change-user-password");
         try {
             Validation.password(password, confirmation);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure("change-user-password");
+        } catch (ValidationException ex) {
+            rejectInput("change-user-password", ex);
             throw ex;
         }
-        String storedAdministratorPassword;
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        requireReauthentication(user, currentPassword,
+                "changing a password");
+
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
-                try (PreparedStatement statement = conn.prepareStatement(
-                        "SELECT password, role, locked FROM users "
-                        + "WHERE id = ? AND username = ?")) {
-                    statement.setInt(1, currentSession.id);
-                    statement.setString(2, currentSession.username);
-                    try (ResultSet rs = statement.executeQuery()) {
-                        if (!rs.next()
-                                || rs.getInt("role") != 5
-                                || rs.getInt("locked") != 0) {
-                            conn.rollback();
-                            invalidateSession();
-                            recordSecurityEvent(
-                                    "REAUTHORIZATION_FAILURE",
-                                    currentSession.username,
-                                    "Password change denied because "
-                                    + "administrator authorization changed");
-                            throw new SecurityException(
-                                    "Administrator authorization is no "
-                                    + "longer valid.");
-                        }
-                        storedAdministratorPassword =
-                                rs.getString("password");
-                    }
+                Account target = findAccount(conn, username);
+                if (target == null) {
+                    conn.rollback();
+                    throw new ValidationException("User no longer exists.");
                 }
-
-                if (!matchesPassword(
-                        currentPassword, storedAdministratorPassword)) {
-                    insertLog(conn, "REAUTHENTICATION_FAILURE",
-                            currentSession.username,
-                            "Password change re-authentication failed",
-                            timestamp());
-                    conn.commit();
-                    throw new SecurityException(
-                            "The current password is incorrect.");
+                // An administrator may change their OWN password, but not
+                // another administrator's.
+                if (target.id != user.id) {
+                    requireManageableTarget(conn, user, username,
+                            "USER_PASSWORD_CHANGE_REJECTED");
                 }
-
                 try (PreparedStatement statement = conn.prepareStatement(
                         "UPDATE users SET password = ?, failed_attempts = 0 "
-                        + "WHERE username = ?")) {
+                        + "WHERE id = ?")) {
                     statement.setString(1, PasswordHasher.hash(password));
-                    statement.setString(2, username);
-                    if (statement.executeUpdate() != 1) {
-                        conn.commit();
-                        throw new IllegalArgumentException(
-                                "User no longer exists.");
-                    }
-                    insertLog(conn, "USER_PASSWORD_CHANGED",
-                            currentSession.username,
-                            "Administrator changed an account password",
-                            timestamp());
-                    conn.commit();
+                    statement.setInt(2, target.id);
+                    statement.executeUpdate();
                 }
+                insertLog(conn, "USER_PASSWORD_CHANGED", user.username,
+                        target.id == user.id
+                                ? "Administrator changed their own password"
+                                : "Administrator changed an account password",
+                        timestamp());
+                conn.commit();
             } catch (SQLException ex) {
                 rollback(conn, ex);
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "USER_PASSWORD_CHANGE_FAILURE",
-                    currentSession.username,
+            recordSecurityEvent("USER_PASSWORD_CHANGE_FAILURE", user.username,
                     "Account password change failed");
-            throw new AppException(
-                    "Password could not be changed.", false, ex);
+            throw new AppException("Password could not be changed.", false,
+                    ex);
         }
     }
 
-    private static boolean matchesPassword(
-            char[] password, String storedPassword) {
-        if (password == null || storedPassword == null) {
-            return false;
-        }
-        if (PasswordHasher.isHash(storedPassword)) {
-            return PasswordHasher.verify(password, storedPassword);
-        }
-        return !storedPassword.startsWith("pbkdf2-sha256$")
-                && matchesLegacyPassword(password, storedPassword);
-    }
-
-    private static Integer getNullableInt(
-            ResultSet rs, String column) throws SQLException {
-        int value = rs.getInt(column);
-        return rs.wasNull() ? null : Integer.valueOf(value);
-    }
-
-    public void deleteUser(String username) {
-        AuthenticatedUser currentSession = requireRoles(
-                "delete-user", 5);
+    public void deleteUser(String username, char[] currentPassword) {
+        AuthenticatedUser user = authorize(Permission.DELETE_USER);
         validateUserName(username, "delete-user");
-        try (Connection conn = DriverManager.getConnection(driverURL)) {
+        requireReauthentication(user, currentPassword, "deleting a user");
+
+        try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
-                int targetId;
-                int role;
-                try (PreparedStatement find = conn.prepareStatement(
-                        "SELECT id, role FROM users WHERE username = ?")) {
-                    find.setString(1, username);
-                    try (ResultSet rs = find.executeQuery()) {
-                        if (!rs.next()) {
-                            conn.commit();
-                            throw new IllegalArgumentException(
-                                    "User no longer exists.");
-                        }
-                        targetId = rs.getInt("id");
-                        role = rs.getInt("role");
-                    }
-                }
-                if (targetId == currentSession.id) {
-                    insertLog(conn, "USER_DELETE_REJECTED",
-                            currentSession.username,
-                            "Administrator cannot delete their own account",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "You cannot delete your own account.");
-                }
-                if (role == 5 && countAdministrators(conn) <= 1) {
-                    insertLog(conn, "USER_DELETE_REJECTED",
-                            currentSession.username,
-                            "Cannot delete the last administrator",
-                            timestamp());
-                    conn.commit();
-                    throw new IllegalArgumentException(
-                            "At least one administrator must remain.");
-                }
+                Account target = requireManageableTarget(
+                        conn, user, username, "USER_DELETE_REJECTED");
                 try (PreparedStatement findHistory = conn.prepareStatement(
                         "SELECT 1 FROM history WHERE user_id = ? "
-                        + "OR (user_id IS NULL AND username = ?) LIMIT 1")) {
-                    findHistory.setInt(1, targetId);
-                    findHistory.setString(2, username);
+                        + "OR (user_id IS NULL AND username = ? "
+                        + "COLLATE NOCASE) LIMIT 1")) {
+                    findHistory.setInt(1, target.id);
+                    findHistory.setString(2, target.username);
                     try (ResultSet rs = findHistory.executeQuery()) {
                         if (rs.next()) {
                             insertLog(conn, "USER_DELETE_REJECTED",
-                                    currentSession.username,
-                                    "Account is referenced by purchase history",
-                                    timestamp());
+                                    user.username,
+                                    "Account is referenced by purchase "
+                                    + "history", timestamp());
                             conn.commit();
-                            throw new IllegalArgumentException(
-                                    "User with purchase history cannot be deleted.");
+                            throw new ValidationException(
+                                    "User with purchase history cannot be "
+                                    + "deleted. Lock the account instead.");
                         }
                     }
                 }
                 try (PreparedStatement delete = conn.prepareStatement(
                         "DELETE FROM users WHERE id = ?")) {
-                    delete.setInt(1, targetId);
+                    delete.setInt(1, target.id);
                     delete.executeUpdate();
                 }
-                insertLog(conn, "USER_DELETED",
-                        currentSession.username,
+                insertLog(conn, "USER_DELETED", user.username,
                         "Administrator deleted an account", timestamp());
                 conn.commit();
             } catch (SQLException ex) {
@@ -1517,74 +1498,87 @@ public class SQLite {
                 throw ex;
             }
         } catch (SQLException ex) {
-            recordSecurityEvent(
-                    "USER_DELETE_FAILURE", currentSession.username,
+            recordSecurityEvent("USER_DELETE_FAILURE", user.username,
                     "Account deletion failed");
-            throw new AppException(
-                    "User could not be deleted.", false, ex);
+            throw new AppException("User could not be deleted.", false, ex);
         }
     }
 
-    public void removeUser(String username) {
-        deleteUser(username);
+    /**
+     * Loads the target account and enforces the "not a super admin" rules:
+     * an administrator cannot modify their own account through user
+     * management, nor any administrator account (including locked ones).
+     * Rejections are logged on the same connection, then committed.
+     */
+    private Account requireManageableTarget(Connection conn,
+            AuthenticatedUser admin, String username, String rejectEvent)
+            throws SQLException {
+        Account target = findAccount(conn, username);
+        if (target == null) {
+            conn.rollback();
+            throw new ValidationException("User no longer exists.");
+        }
+        if (target.id == admin.id || target.isAdministrator()) {
+            insertLog(conn, rejectEvent, admin.username,
+                    target.id == admin.id
+                            ? "Administrator attempted to modify their own "
+                            + "account through user management"
+                            : "Administrator attempted to modify another "
+                            + "administrator account", timestamp());
+            conn.commit();
+            throw new AccessDeniedException(target.id == admin.id
+                    ? "You cannot modify your own account here."
+                    : ADMIN_TARGET_MESSAGE);
+        }
+        return target;
     }
 
-    public Product getProduct(String name) {
-        requireRoles("view-product", 2, 3, 4, 5);
-        String sql = "SELECT id, name, stock, price FROM product WHERE name = ?";
-        try (Connection conn = DriverManager.getConnection(driverURL);
-                PreparedStatement statement = conn.prepareStatement(sql)) {
-            statement.setString(1, name);
-            try (ResultSet rs = statement.executeQuery()) {
-                return rs.next() ? mapProduct(rs) : null;
+    private static Account findAccount(Connection conn, String username)
+            throws SQLException {
+        try (PreparedStatement find = conn.prepareStatement(
+                "SELECT id, username, role, locked, role_before_lock "
+                + "FROM users WHERE username = ? COLLATE NOCASE")) {
+            find.setString(1, username);
+            try (ResultSet rs = find.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                return new Account(
+                        rs.getInt("id"),
+                        rs.getString("username"),
+                        rs.getInt("role"),
+                        rs.getInt("locked"),
+                        getNullableInt(rs, "role_before_lock"));
             }
-        } catch (SQLException ex) {
-            throw new AppException(
-                    "Product could not be loaded.", false, ex);
-        }
-    }
-
-    private static Product mapProduct(ResultSet rs) throws SQLException {
-        return new Product(
-                rs.getInt("id"),
-                rs.getString("name"),
-                rs.getInt("stock"),
-                priceCents(rs.getDouble("price")));
-    }
-
-    private static void validatePriceCents(long priceCents) {
-        if (priceCents < 0 || priceCents > Validation.MAX_PRICE_CENTS) {
-            throw new IllegalArgumentException(
-                    "Price is outside the allowed range.");
         }
     }
 
     private void validateUserName(String username, String operation) {
         try {
             Validation.username(username);
-        } catch (IllegalArgumentException ex) {
-            logValidationFailure(operation);
+        } catch (ValidationException ex) {
+            rejectInput(operation, ex);
             throw ex;
         }
-
     }
 
-    private static int countAdministrators(Connection conn)
+    // ------------------------------------------------------------------
+    // JDBC helpers
+    // ------------------------------------------------------------------
+
+    private static Integer getNullableInt(ResultSet rs, String column)
             throws SQLException {
-        try (Statement statement = conn.createStatement();
-                ResultSet rs = statement.executeQuery(
-                        "SELECT COUNT(*) FROM users WHERE role = 5")) {
-            return rs.next() ? rs.getInt(1) : 0;
-        }
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : Integer.valueOf(value);
     }
 
-    private static int countActiveAdministrators(Connection conn)
+    private static void setNullableInt(
+            PreparedStatement statement, int index, Integer value)
             throws SQLException {
-        try (Statement statement = conn.createStatement();
-                ResultSet rs = statement.executeQuery(
-                        "SELECT COUNT(*) FROM users "
-                        + "WHERE role = 5 AND locked = 0")) {
-            return rs.next() ? rs.getInt(1) : 0;
+        if (value == null) {
+            statement.setNull(index, Types.INTEGER);
+        } else {
+            statement.setInt(index, value.intValue());
         }
     }
 

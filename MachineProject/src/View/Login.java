@@ -1,8 +1,10 @@
 
 package View;
 
-import Controller.AppException;
 import Model.LoginResult;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import javax.swing.JOptionPane;
 
@@ -88,58 +90,74 @@ public class Login extends javax.swing.JPanel {
         );
     }// </editor-fold>//GEN-END:initComponents
     
-    private void loginBtnActionPerformed(java.awt.event.ActionEvent evt) {
+    private void loginBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_loginBtnActionPerformed
         char[] password = passwordFld.getPassword();
-
         try {
             LoginResult result =
                     frame.loginAction(usernameFld.getText(), password);
 
             if (!result.isSuccessful()) {
+                // One generic message for every failure (unknown user,
+                // wrong password, locked or disabled account).
                 JOptionPane.showMessageDialog(
                         this,
                         "Invalid username and/or password.",
                         "Login Failed",
                         JOptionPane.ERROR_MESSAGE);
-
             } else {
-                String previousAttempt =
-                        result.getPreviousTime() == null
-                                ? "No previous login attempt"
-                                : result.getPreviousTime() + " ("
-                                + result.getPreviousStatus() + ")";
-
-                String previousSuccess =
-                        result.getLastSuccessfulLogin() == null
-                                ? "No previous successful login"
-                                : result.getLastSuccessfulLogin();
-
-                JOptionPane.showMessageDialog(
-                        this,
-                        "Previous login attempt: " + previousAttempt
-                        + "\nPrevious successful login: "
-                        + previousSuccess,
-                        "Login Successful",
-                        JOptionPane.INFORMATION_MESSAGE);
+                showLastAccountUse(result);
             }
-
-        } catch (AppException ex) {
-            if (!ex.isFatal()) {
-                JOptionPane.showMessageDialog(
-                        this,
-                        "Login could not be completed. Please try again.",
-                        "Login Failed",
-                        JOptionPane.ERROR_MESSAGE);
-            }
-
+        } catch (RuntimeException ex) {
+            UiGuard.handle(this, ex);
         } finally {
             Arrays.fill(password, '\0');
             passwordFld.setText("");
         }
     }//GEN-LAST:event_loginBtnActionPerformed
 
+    /** Contextual awareness: last account use, shown after login. */
+    private void showLastAccountUse(LoginResult result) {
+        String previousAttempt = result.getPreviousTime() == null
+                ? "No previous login attempt"
+                : formatTime(result.getPreviousTime()) + " ("
+                + describeStatus(result.getPreviousStatus()) + ")";
+        String previousSuccess = result.getLastSuccessfulLogin() == null
+                ? "No previous successful login"
+                : formatTime(result.getLastSuccessfulLogin());
+
+        JOptionPane.showMessageDialog(
+                this,
+                "Last login attempt: " + previousAttempt
+                + "\nLast successful login: " + previousSuccess
+                + "\nFailed login attempts since then: "
+                + result.getFailedAttemptsSinceLastLogin(),
+                "Login Successful",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private static String formatTime(String isoInstant) {
+        try {
+            return DateTimeFormatter.ofPattern("MMM d, yyyy h:mm:ss a z")
+                    .withZone(ZoneId.systemDefault())
+                    .format(Instant.parse(isoInstant));
+        } catch (RuntimeException ex) {
+            return "Unknown time";
+        }
+    }
+
+    private static String describeStatus(String status) {
+        if ("SUCCESS".equals(status)) {
+            return "successful";
+        }
+        if ("FAILURE".equals(status) || "LOCKED".equals(status)
+                || "BLOCKED".equals(status)) {
+            return "failed";
+        }
+        return "unknown";
+    }
+
     private void registerBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_registerBtnActionPerformed
-        frame.registerNav();
+        UiGuard.run(this, () -> frame.registerNav());
     }//GEN-LAST:event_registerBtnActionPerformed
 
     public void clearCredentials() {

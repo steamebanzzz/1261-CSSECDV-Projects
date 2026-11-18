@@ -5,6 +5,8 @@
  */
 package View;
 //[255,102,51]
+import Controller.AccessControl;
+import Controller.AccessControl.Permission;
 import Controller.SQLite;
 import Model.History;
 import Model.Logs;
@@ -32,27 +34,49 @@ public class AdminHome extends javax.swing.JPanel {
         initComponents();
     }
     
+    private SQLite sqlite;
+    private static final int ROLE = AccessControl.ADMIN;
+    private static final Permission HOME = Permission.VIEW_ADMIN_HOME;
+
     public void init(SQLite sqlite){
+        this.sqlite = sqlite;
         mgmtHistory = new MgmtHistory(sqlite);
         mgmtLogs = new MgmtLogs(sqlite);
         mgmtProduct = new MgmtProduct(sqlite);
         mgmtUser = new MgmtUser(sqlite);
-        mgmtProduct.setAccessRole(5);
-        
+        mgmtProduct.setAccessRole(ROLE);
+
+        // Least privilege: a button is shown only when this role holds the
+        // permission in the central AccessControl policy.
+        usersBtn.setVisible(
+                AccessControl.isAllowed(ROLE, Permission.VIEW_USERS));
+        productsBtn.setVisible(
+                AccessControl.isAllowed(ROLE, Permission.VIEW_PRODUCTS));
+        historyBtn.setVisible(
+                AccessControl.isAllowed(ROLE, historyPermission()));
+        logsBtn.setVisible(
+                AccessControl.isAllowed(ROLE, Permission.VIEW_LOGS));
+
         Content.setLayout(contentView);
         Content.add(new Home("WELCOME ADMIN!", new java.awt.Color(51, 153, 255)), "home");
-        Content.add(this.mgmtUser, "mgmtUser");
-        Content.add(this.mgmtHistory, "mgmtHistory");
-        Content.add(this.mgmtProduct, "mgmtProduct");
-        Content.add(this.mgmtLogs, "mgmtLogs");
-        
-//        UNCOMMENT TO DISABLE BUTTONS
-//        historyBtn.setVisible(false);
-//        usersBtn.setVisible(false);
-//        productsBtn.setVisible(false);
-//        logsBtn.setVisible(false);
+        Content.add(mgmtUser, "mgmtUser");
+        Content.add(mgmtHistory, "mgmtHistory");
+        Content.add(mgmtProduct, "mgmtProduct");
+        Content.add(mgmtLogs, "mgmtLogs");
     }
-    
+
+    private static Permission historyPermission() {
+        return AccessControl.isAllowed(ROLE, Permission.VIEW_ALL_HISTORY)
+                ? Permission.VIEW_ALL_HISTORY : Permission.VIEW_OWN_HISTORY;
+    }
+
+    private void highlight(javax.swing.JButton selected) {
+        javax.swing.JButton[] buttons = {usersBtn, productsBtn, historyBtn, logsBtn};
+        for (javax.swing.JButton button : buttons) {
+            button.setForeground(button == selected ? Color.red : Color.black);
+        }
+    }
+
     public void showPnl(String panelName){
         contentView.show(Content, panelName);
     }
@@ -157,42 +181,38 @@ public class AdminHome extends javax.swing.JPanel {
     }// </editor-fold>//GEN-END:initComponents
 
     private void usersBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_usersBtnActionPerformed
-        mgmtUser.init();
-        usersBtn.setForeground(Color.red);
-        productsBtn.setForeground(Color.black);
-        historyBtn.setForeground(Color.black);
-        logsBtn.setForeground(Color.black);
-        contentView.show(Content, "mgmtUser");
+        if (UiGuard.open(this, sqlite, HOME, Permission.VIEW_USERS,
+                "User Management", mgmtUser::init)) {
+            highlight(usersBtn);
+            contentView.show(Content, "mgmtUser");
+        }
     }//GEN-LAST:event_usersBtnActionPerformed
 
     private void productsBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_productsBtnActionPerformed
-        mgmtProduct.init();
-        usersBtn.setForeground(Color.black);
-        productsBtn.setForeground(Color.red);
-        historyBtn.setForeground(Color.black);
-        logsBtn.setForeground(Color.black);
-        contentView.show(Content, "mgmtProduct");
+        if (UiGuard.open(this, sqlite, HOME, Permission.VIEW_PRODUCTS,
+                "Products", mgmtProduct::init)) {
+            highlight(productsBtn);
+            contentView.show(Content, "mgmtProduct");
+        }
     }//GEN-LAST:event_productsBtnActionPerformed
 
     private void historyBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_historyBtnActionPerformed
-        mgmtHistory.init();
-        usersBtn.setForeground(Color.black);
-        productsBtn.setForeground(Color.black);
-        historyBtn.setForeground(Color.red);
-        logsBtn.setForeground(Color.black);
-        contentView.show(Content, "mgmtHistory");
+        if (UiGuard.open(this, sqlite, HOME, historyPermission(),
+                "Purchase History", mgmtHistory::init)) {
+            highlight(historyBtn);
+            contentView.show(Content, "mgmtHistory");
+        }
     }//GEN-LAST:event_historyBtnActionPerformed
 
     private void logsBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_logsBtnActionPerformed
-        mgmtLogs.init();
-        usersBtn.setForeground(Color.black);
-        productsBtn.setForeground(Color.black);
-        historyBtn.setForeground(Color.black);
-        logsBtn.setForeground(Color.red);
-        contentView.show(Content, "mgmtLogs");
+        if (UiGuard.open(this, sqlite, HOME, Permission.VIEW_LOGS,
+                "Security Logs", mgmtLogs::init)) {
+            highlight(logsBtn);
+            contentView.show(Content, "mgmtLogs");
+        }
     }//GEN-LAST:event_logsBtnActionPerformed
-    
-    
+
+
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JPanel Content;

@@ -6,7 +6,6 @@
 package View;
 
 import Controller.SQLite;
-import Controller.AppException;
 import Model.History;
 import java.util.ArrayList;
 import javax.swing.JOptionPane;
@@ -162,14 +161,14 @@ public class MgmtHistory extends javax.swing.JPanel {
     }// </editor-fold>//GEN-END:initComponents
 
     private void searchBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_searchBtnActionPerformed
-        JTextField searchFld = new JTextField("0");
+        JTextField searchFld = new JTextField("");
         designer(searchFld, "SEARCH USERNAME OR PRODUCT");
 
         Object[] message = {
             searchFld
         };
 
-        int result = JOptionPane.showConfirmDialog(null, message, "SEARCH HISTORY", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
+        int result = JOptionPane.showConfirmDialog(this, message, "SEARCH HISTORY", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
         if (result == JOptionPane.OK_OPTION) {
             try {
@@ -179,21 +178,14 @@ public class MgmtHistory extends javax.swing.JPanel {
                 for (History entry : history) {
                     addHistoryRow(entry);
                 }
-            } catch (IllegalArgumentException
-                    | AppException | SecurityException ex) {
-                if (ex instanceof AppException
-                        && ((AppException) ex).isFatal()) {
-                    return;
-                }
-                JOptionPane.showMessageDialog(
-                        this, ex.getMessage(), "Search failed",
-                        JOptionPane.ERROR_MESSAGE);
+            } catch (RuntimeException ex) {
+                UiGuard.handle(this, ex);
             }
         }
     }//GEN-LAST:event_searchBtnActionPerformed
 
     private void reloadBtnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_reloadBtnActionPerformed
-        init();
+        UiGuard.run(this, this::init);
     }//GEN-LAST:event_reloadBtnActionPerformed
 
 

@@ -5,8 +5,9 @@
  */
 package View;
 
+import Controller.AccessControl;
+import Controller.AccessControl.Permission;
 import Controller.SQLite;
-import Controller.AppException;
 import Model.Product;
 import java.util.ArrayList;
 import javax.swing.JOptionPane;
@@ -52,12 +53,16 @@ public class MgmtProduct extends javax.swing.JPanel {
         }
     }
 
+    /** Button visibility comes from the central AccessControl policy. */
     public void setAccessRole(int role) {
-        boolean canManageProducts = role == 3 || role == 4 || role == 5;
-        purchaseBtn.setVisible(role == 2);
-        addBtn.setVisible(canManageProducts);
-        editBtn.setVisible(canManageProducts);
-        deleteBtn.setVisible(canManageProducts);
+        purchaseBtn.setVisible(AccessControl.isAllowed(
+                role, Permission.PURCHASE_PRODUCT));
+        addBtn.setVisible(AccessControl.isAllowed(
+                role, Permission.ADD_PRODUCT));
+        editBtn.setVisible(AccessControl.isAllowed(
+                role, Permission.EDIT_PRODUCT));
+        deleteBtn.setVisible(AccessControl.isAllowed(
+                role, Permission.DELETE_PRODUCT));
     }
     
     public void designer(JTextField component, String text){
@@ -193,7 +198,7 @@ public class MgmtProduct extends javax.swing.JPanel {
                 "How many " + name + " do you want to purchase?", stockFld
             };
 
-            int result = JOptionPane.showConfirmDialog(null, message, "PURCHASE PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
+            int result = JOptionPane.showConfirmDialog(this, message, "PURCHASE PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
             if (result == JOptionPane.OK_OPTION) {
                 try {
@@ -205,15 +210,8 @@ public class MgmtProduct extends javax.swing.JPanel {
                             "Purchase completed. Total: "
                             + java.math.BigDecimal.valueOf(
                                     totalCents, 2).toPlainString());
-                } catch (IllegalArgumentException
-                        | AppException | SecurityException ex) {
-                    if (ex instanceof AppException
-                            && ((AppException) ex).isFatal()) {
-                        return;
-                    }
-                    JOptionPane.showMessageDialog(
-                            this, ex.getMessage(), "Purchase failed",
-                            JOptionPane.ERROR_MESSAGE);
+                } catch (RuntimeException ex) {
+                    UiGuard.handle(this, ex);
                 }
             }
         }
@@ -232,7 +230,7 @@ public class MgmtProduct extends javax.swing.JPanel {
             "Insert New Product Details:", nameFld, stockFld, priceFld
         };
 
-        int result = JOptionPane.showConfirmDialog(null, message, "ADD PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
+        int result = JOptionPane.showConfirmDialog(this, message, "ADD PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
         if (result == JOptionPane.OK_OPTION) {
             try {
@@ -241,15 +239,8 @@ public class MgmtProduct extends javax.swing.JPanel {
                         stockFld.getText(),
                         priceFld.getText());
                 init();
-            } catch (IllegalArgumentException
-                    | AppException | SecurityException ex) {
-                if (ex instanceof AppException
-                        && ((AppException) ex).isFatal()) {
-                    return;
-                }
-                JOptionPane.showMessageDialog(
-                        this, ex.getMessage(), "Product could not be added",
-                        JOptionPane.ERROR_MESSAGE);
+            } catch (RuntimeException ex) {
+                UiGuard.handle(this, ex);
             }
         }
     }//GEN-LAST:event_addBtnActionPerformed
@@ -270,7 +261,7 @@ public class MgmtProduct extends javax.swing.JPanel {
                 "Edit Product Details:", nameFld, stockFld, priceFld
             };
 
-            int result = JOptionPane.showConfirmDialog(null, message, "EDIT PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
+            int result = JOptionPane.showConfirmDialog(this, message, "EDIT PRODUCT", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE, null);
 
             if (result == JOptionPane.OK_OPTION) {
                 try {
@@ -278,16 +269,8 @@ public class MgmtProduct extends javax.swing.JPanel {
                             originalName, nameFld.getText(),
                             stockFld.getText(), priceFld.getText());
                     init();
-                } catch (IllegalArgumentException
-                        | AppException | SecurityException ex) {
-                    if (ex instanceof AppException
-                            && ((AppException) ex).isFatal()) {
-                        return;
-                    }
-                    JOptionPane.showMessageDialog(
-                            this, ex.getMessage(),
-                            "Product could not be edited",
-                            JOptionPane.ERROR_MESSAGE);
+                } catch (RuntimeException ex) {
+                    UiGuard.handle(this, ex);
                 }
             }
         }
@@ -297,22 +280,14 @@ public class MgmtProduct extends javax.swing.JPanel {
         if(table.getSelectedRow() >= 0){
             int row = table.convertRowIndexToModel(table.getSelectedRow());
             String name = tableModel.getValueAt(row, 0).toString();
-            int result = JOptionPane.showConfirmDialog(null, "Are you sure you want to delete " + name + "?", "DELETE PRODUCT", JOptionPane.YES_NO_OPTION);
+            int result = JOptionPane.showConfirmDialog(this, "Are you sure you want to delete " + name + "?", "DELETE PRODUCT", JOptionPane.YES_NO_OPTION);
             
             if (result == JOptionPane.YES_OPTION) {
                 try {
                     sqlite.deleteProduct(name);
                     init();
-                } catch (IllegalArgumentException
-                        | AppException | SecurityException ex) {
-                    if (ex instanceof AppException
-                            && ((AppException) ex).isFatal()) {
-                        return;
-                    }
-                    JOptionPane.showMessageDialog(
-                            this, ex.getMessage(),
-                            "Product could not be deleted",
-                            JOptionPane.ERROR_MESSAGE);
+                } catch (RuntimeException ex) {
+                    UiGuard.handle(this, ex);
                 }
             }
         }
