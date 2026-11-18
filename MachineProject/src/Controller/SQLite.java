@@ -27,7 +27,9 @@ import java.util.List;
  *    session's account from the database and checks it against the single
  *    AccessControl policy (default deny, every denial logged).
  *  - Every SQL statement is a PreparedStatement; user data is only ever bound
- *    as a parameter, never concatenated into SQL.
+ *    as a parameter, never concatenated into SQL. Every SQL string is a
+ *    compile-time constant: no SQL text is assembled at run time, not even
+ *    the schema-upgrade DDL (which JDBC cannot parameterize).
  *  - Inputs are validated with Validation (reject, never sanitize) and every
  *    rejection is written to the security log.
  *  - SQLException and other technical errors are never shown to the user;
@@ -42,8 +44,6 @@ public class SQLite {
     private static final String ADMIN_TARGET_MESSAGE =
             "Administrator accounts can only be managed by the "
             + "super administrator.";
-    private static final List<String> SCHEMA_TABLES =
-            Arrays.asList("users", "product", "history", "logs");
 
     private final String driverURL;
     private final String dummyHash;
@@ -165,25 +165,11 @@ public class SQLite {
                         + "desc TEXT NOT NULL,"
                         + "timestamp TEXT NOT NULL)");
 
-                addColumnIfMissing(conn, "users", "failed_attempts",
-                        "INTEGER NOT NULL DEFAULT 0");
-                addColumnIfMissing(conn, "users", "role_before_lock",
-                        "INTEGER");
-                addColumnIfMissing(conn, "users", "last_login_attempt_at",
-                        "TEXT");
-                addColumnIfMissing(conn, "users", "last_login_status",
-                        "TEXT");
-                addColumnIfMissing(conn, "users",
-                        "last_successful_login_at", "TEXT");
-                addColumnIfMissing(conn, "history", "user_id", "INTEGER");
-                addColumnIfMissing(conn, "history", "product_id",
-                        "INTEGER");
-                addColumnIfMissing(conn, "history", "unit_price_cents",
-                        "INTEGER");
-                addColumnIfMissing(conn, "logs", "archived",
-                        "INTEGER NOT NULL DEFAULT 0");
-                addColumnIfMissing(conn, "logs", "archived_at", "TEXT");
-                addColumnIfMissing(conn, "logs", "archived_by", "TEXT");
+                for (ColumnUpgrade upgrade : COLUMN_UPGRADES) {
+                    if (!columnExists(conn, upgrade.table, upgrade.column)) {
+                        execute(conn, upgrade.alterTableSql);
+                    }
+                }
 
                 execute(conn, "UPDATE users SET role_before_lock = role "
                         + "WHERE locked = 1 AND role BETWEEN 2 AND 5 "
@@ -232,26 +218,65 @@ public class SQLite {
         }
     }
 
-    private static void addColumnIfMissing(
-            Connection conn, String table, String column, String definition)
-            throws SQLException {
-        // Identifiers cannot be bound as parameters, so only fixed,
-        // whitelisted schema names reach the ALTER TABLE statement.
-        if (!SCHEMA_TABLES.contains(table) || !column.matches("[a-z_]+")) {
-            throw new IllegalStateException("Invalid schema change.");
+    /**
+     * One column added to a database created by the original starter.
+     * Table and column names cannot be bound as "?" parameters in DDL, so
+     * each upgrade carries its complete ALTER TABLE statement as a
+     * compile-time constant; nothing is concatenated at run time.
+     */
+    private static final class ColumnUpgrade {
+        private final String table;
+        private final String column;
+        private final String alterTableSql;
+
+        private ColumnUpgrade(String table, String column,
+                String alterTableSql) {
+            this.table = table;
+            this.column = column;
+            this.alterTableSql = alterTableSql;
         }
+    }
+
+    private static final ColumnUpgrade[] COLUMN_UPGRADES = {
+        new ColumnUpgrade("users", "failed_attempts",
+                "ALTER TABLE users ADD COLUMN failed_attempts "
+                + "INTEGER NOT NULL DEFAULT 0"),
+        new ColumnUpgrade("users", "role_before_lock",
+                "ALTER TABLE users ADD COLUMN role_before_lock INTEGER"),
+        new ColumnUpgrade("users", "last_login_attempt_at",
+                "ALTER TABLE users ADD COLUMN last_login_attempt_at TEXT"),
+        new ColumnUpgrade("users", "last_login_status",
+                "ALTER TABLE users ADD COLUMN last_login_status TEXT"),
+        new ColumnUpgrade("users", "last_successful_login_at",
+                "ALTER TABLE users ADD COLUMN last_successful_login_at "
+                + "TEXT"),
+        new ColumnUpgrade("history", "user_id",
+                "ALTER TABLE history ADD COLUMN user_id INTEGER"),
+        new ColumnUpgrade("history", "product_id",
+                "ALTER TABLE history ADD COLUMN product_id INTEGER"),
+        new ColumnUpgrade("history", "unit_price_cents",
+                "ALTER TABLE history ADD COLUMN unit_price_cents INTEGER"),
+        new ColumnUpgrade("logs", "archived",
+                "ALTER TABLE logs ADD COLUMN archived "
+                + "INTEGER NOT NULL DEFAULT 0"),
+        new ColumnUpgrade("logs", "archived_at",
+                "ALTER TABLE logs ADD COLUMN archived_at TEXT"),
+        new ColumnUpgrade("logs", "archived_by",
+                "ALTER TABLE logs ADD COLUMN archived_by TEXT")
+    };
+
+    /** Table and column are bound as parameters of pragma_table_info. */
+    private static boolean columnExists(
+            Connection conn, String table, String column)
+            throws SQLException {
         try (PreparedStatement statement = conn.prepareStatement(
                 "SELECT 1 FROM pragma_table_info(?) WHERE name = ?")) {
             statement.setString(1, table);
             statement.setString(2, column);
             try (ResultSet rs = statement.executeQuery()) {
-                if (rs.next()) {
-                    return;
-                }
+                return rs.next();
             }
         }
-        execute(conn, "ALTER TABLE " + table + " ADD COLUMN "
-                + column + " " + definition);
     }
 
     /** Replaces any plaintext password left in the database by a hash. */
@@ -423,19 +448,32 @@ public class SQLite {
         PasswordHasher.verify(password, dummyHash);
     }
 
+    /** Failed login: also records the attempt's time and status. */
+    private static final String RECORD_FAILED_LOGIN_SQL =
+            "UPDATE users SET failed_attempts = ?, "
+            + "locked = CASE WHEN ? = 1 THEN 1 ELSE locked END, "
+            + "role_before_lock = CASE WHEN ? = 1 AND role BETWEEN 2 "
+            + "AND 5 THEN role ELSE role_before_lock END, "
+            + "role = CASE WHEN ? = 1 THEN 1 ELSE role END, "
+            + "last_login_attempt_at = ?, last_login_status = ? "
+            + "WHERE id = ?";
+
+    /** Failed re-authentication: counts toward the same lockout. */
+    private static final String RECORD_FAILED_REAUTH_SQL =
+            "UPDATE users SET failed_attempts = ?, "
+            + "locked = CASE WHEN ? = 1 THEN 1 ELSE locked END, "
+            + "role_before_lock = CASE WHEN ? = 1 AND role BETWEEN 2 "
+            + "AND 5 THEN role ELSE role_before_lock END, "
+            + "role = CASE WHEN ? = 1 THEN 1 ELSE role END "
+            + "WHERE id = ?";
+
     private static void recordFailedAttempt(
             Connection conn, int userId, int attempts, boolean lockAccount,
             String timestamp, boolean loginAttempt) throws SQLException {
-        String sql = "UPDATE users SET failed_attempts = ?, "
-                + "locked = CASE WHEN ? = 1 THEN 1 ELSE locked END, "
-                + "role_before_lock = CASE WHEN ? = 1 AND role BETWEEN 2 "
-                + "AND 5 THEN role ELSE role_before_lock END, "
-                + "role = CASE WHEN ? = 1 THEN 1 ELSE role END"
-                + (loginAttempt ? ", last_login_attempt_at = ?, "
-                        + "last_login_status = ?" : "")
-                + " WHERE id = ?";
         int lock = lockAccount ? 1 : 0;
-        try (PreparedStatement statement = conn.prepareStatement(sql)) {
+        try (PreparedStatement statement = conn.prepareStatement(
+                loginAttempt ? RECORD_FAILED_LOGIN_SQL
+                        : RECORD_FAILED_REAUTH_SQL)) {
             int index = 1;
             statement.setInt(index++, attempts);
             statement.setInt(index++, lock);
@@ -1073,18 +1111,26 @@ public class SQLite {
     // Purchase history
     // ------------------------------------------------------------------
 
+    /** Manager view: every user's purchases. */
+    private static final String ALL_HISTORY_SQL =
+            "SELECT id, user_id, product_id, username, name, "
+            + "stock, unit_price_cents, timestamp FROM history "
+            + "ORDER BY timestamp DESC, id DESC";
+
+    /** Client view: only the session's own purchases. */
+    private static final String OWN_HISTORY_SQL =
+            "SELECT id, user_id, product_id, username, name, "
+            + "stock, unit_price_cents, timestamp FROM history "
+            + "WHERE user_id = ? OR (user_id IS NULL "
+            + "AND username = ? COLLATE NOCASE) "
+            + "ORDER BY timestamp DESC, id DESC";
+
     public ArrayList<History> getHistory() {
         AuthenticatedUser user = authorize(
                 Permission.VIEW_OWN_HISTORY, Permission.VIEW_ALL_HISTORY);
         boolean ownHistoryOnly = !AccessControl.isAllowed(
                 user.role, Permission.VIEW_ALL_HISTORY);
-        String sql = "SELECT id, user_id, product_id, username, name, "
-                + "stock, unit_price_cents, timestamp FROM history"
-                + (ownHistoryOnly
-                        ? " WHERE user_id = ? OR (user_id IS NULL "
-                        + "AND username = ? COLLATE NOCASE)"
-                        : "")
-                + " ORDER BY timestamp DESC, id DESC";
+        String sql = ownHistoryOnly ? OWN_HISTORY_SQL : ALL_HISTORY_SQL;
         ArrayList<History> histories = new ArrayList<History>();
         try (Connection conn = connect();
                 PreparedStatement statement = conn.prepareStatement(sql)) {
