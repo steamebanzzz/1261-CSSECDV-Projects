@@ -213,6 +213,7 @@ public class SQLite {
                         + "users_username_nocase_idx "
                         + "ON users(username COLLATE NOCASE)");
 
+                createUserConstraints(conn);
                 migratePlaintextPasswords(conn);
                 conn.commit();
             } catch (SQLException ex) {
@@ -223,6 +224,72 @@ public class SQLite {
             throw fatalException(
                     "Database initialization could not be completed.", ex);
         }
+    }
+
+    /**
+     * Database-level constraints on the users table (defense in depth for
+     * checklist 2.3.2 / 2.3.3): even a direct edit of database.db, e.g. in
+     * DB Browser, cannot store a role outside 1-5, a locked flag other than
+     * 0/1, a negative failed-attempt count, or a username that breaks the
+     * [A-Za-z0-9]{3,32} rule. The write is rejected outright (never
+     * corrected), matching the reject-by-default policy.
+     *
+     * Triggers are used because SQLite cannot add CHECK constraints to an
+     * existing table without rebuilding it. They are "gentle": they only
+     * look at the columns a statement actually writes, so a pre-existing
+     * bad row does not break unrelated updates (the login code still
+     * blocks such an account).
+     */
+    private static void createUserConstraints(Connection conn)
+            throws SQLException {
+        execute(conn, "CREATE TRIGGER IF NOT EXISTS users_validate_insert "
+                + "BEFORE INSERT ON users BEGIN SELECT CASE "
+                + "WHEN typeof(NEW.role) <> 'integer' "
+                + "OR NEW.role NOT BETWEEN 1 AND 5 "
+                + "THEN RAISE(ABORT, 'role must be an integer from 1 to 5') "
+                + "WHEN NEW.locked IS NOT NULL AND NEW.locked NOT IN (0, 1) "
+                + "THEN RAISE(ABORT, 'locked must be 0 or 1') "
+                + "WHEN typeof(NEW.failed_attempts) <> 'integer' "
+                + "OR NEW.failed_attempts < 0 "
+                + "THEN RAISE(ABORT, "
+                + "'failed_attempts must be a non-negative integer') "
+                + "WHEN NEW.role_before_lock IS NOT NULL "
+                + "AND NEW.role_before_lock NOT IN (2, 3, 4, 5) "
+                + "THEN RAISE(ABORT, "
+                + "'role_before_lock must be empty or 2 to 5') "
+                + "WHEN typeof(NEW.username) <> 'text' "
+                + "OR length(NEW.username) NOT BETWEEN 3 AND 32 "
+                + "OR NEW.username GLOB '*[^A-Za-z0-9]*' "
+                + "THEN RAISE(ABORT, "
+                + "'username must be 3-32 letters or digits') "
+                + "END; END");
+        execute(conn, "CREATE TRIGGER IF NOT EXISTS users_validate_update "
+                + "BEFORE UPDATE OF role, locked, failed_attempts, "
+                + "role_before_lock, username ON users BEGIN SELECT CASE "
+                + "WHEN NEW.role IS NOT OLD.role "
+                + "AND (typeof(NEW.role) <> 'integer' "
+                + "OR NEW.role NOT BETWEEN 1 AND 5) "
+                + "THEN RAISE(ABORT, 'role must be an integer from 1 to 5') "
+                + "WHEN NEW.locked IS NOT OLD.locked "
+                + "AND (NEW.locked IS NULL OR NEW.locked NOT IN (0, 1)) "
+                + "THEN RAISE(ABORT, 'locked must be 0 or 1') "
+                + "WHEN NEW.failed_attempts IS NOT OLD.failed_attempts "
+                + "AND (typeof(NEW.failed_attempts) <> 'integer' "
+                + "OR NEW.failed_attempts < 0) "
+                + "THEN RAISE(ABORT, "
+                + "'failed_attempts must be a non-negative integer') "
+                + "WHEN NEW.role_before_lock IS NOT OLD.role_before_lock "
+                + "AND NEW.role_before_lock IS NOT NULL "
+                + "AND NEW.role_before_lock NOT IN (2, 3, 4, 5) "
+                + "THEN RAISE(ABORT, "
+                + "'role_before_lock must be empty or 2 to 5') "
+                + "WHEN NEW.username IS NOT OLD.username "
+                + "AND (typeof(NEW.username) <> 'text' "
+                + "OR length(NEW.username) NOT BETWEEN 3 AND 32 "
+                + "OR NEW.username GLOB '*[^A-Za-z0-9]*') "
+                + "THEN RAISE(ABORT, "
+                + "'username must be 3-32 letters or digits') "
+                + "END; END");
     }
 
     private static void execute(Connection conn, String sql)

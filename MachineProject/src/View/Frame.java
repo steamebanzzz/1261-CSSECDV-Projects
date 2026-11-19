@@ -324,13 +324,30 @@ public class Frame extends javax.swing.JFrame {
     }
 
     private void handleFatalError() {
+        // Nobody was signed in yet (login or register screen): there is no
+        // session to end, so show a calm "try again later" notice instead.
+        boolean signedIn = currentDashboardRole != 0;
+        boolean registering = registerPnl.isShowing();
         main.sqlite.invalidateSession();
         showLogin();
-        JOptionPane.showMessageDialog(
-                this,
-                "A system error occurred. Please sign in again.",
-                "Session ended",
-                JOptionPane.ERROR_MESSAGE);
+        if (signedIn) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "A system error occurred. Please sign in again.",
+                    "Session ended",
+                    JOptionPane.ERROR_MESSAGE);
+        } else {
+            JOptionPane.showMessageDialog(
+                    this,
+                    registering
+                            ? "Unable to register right now. "
+                            + "Please try again later."
+                            : "Unable to sign in right now. "
+                            + "Please try again later.",
+                    registering ? "Registration unavailable"
+                            : "Sign in unavailable",
+                    JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     /** Fail-safe for unexpected errors (called by UiGuard). */

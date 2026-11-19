@@ -103,7 +103,7 @@ public class Login extends javax.swing.JPanel {
                         this,
                         "Invalid username and/or password.",
                         "Login Failed",
-                        JOptionPane.ERROR_MESSAGE);
+                        JOptionPane.WARNING_MESSAGE);
             } else {
                 showLastAccountUse(result);
             }

@@ -41,7 +41,7 @@ public final class Validation {
     public static String username(String value) {
         if (!validUsername(value)) {
             throw new ValidationException(
-                    "Username must contain 3-32 letters or digits.");
+                    "Username must only contain alphanumeric characters and be of length 3 to 32.");
         }
         return value;
     }
@@ -49,7 +49,7 @@ public final class Validation {
     public static String productName(String value) {
         if (value == null || !PRODUCT_NAME.matcher(value).matches()) {
             throw new ValidationException(
-                    "Product name must contain 1-64 letters or digits.");
+                    "Product name must only contain alphanumeric characters and be of length 1 to 64.");
         }
         return value;
     }
@@ -57,7 +57,7 @@ public final class Validation {
     public static String search(String value) {
         if (value == null || !SEARCH.matcher(value).matches()) {
             throw new ValidationException(
-                    "Search must contain at most 64 letters or digits.");
+                    "Search must only contain alphanumeric characters and at most be of 64 length.");
         }
         return value;
     }
