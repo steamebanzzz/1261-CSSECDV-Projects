@@ -128,9 +128,7 @@ public class Login extends javax.swing.JPanel {
         JOptionPane.showMessageDialog(
                 this,
                 "Last login attempt: " + previousAttempt
-                + "\nLast successful login: " + previousSuccess
-                + "\nFailed login attempts since then: "
-                + result.getFailedAttemptsSinceLastLogin(),
+                + "\nLast successful login: " + previousSuccess,
                 "Login Successful",
                 JOptionPane.INFORMATION_MESSAGE);
     }
