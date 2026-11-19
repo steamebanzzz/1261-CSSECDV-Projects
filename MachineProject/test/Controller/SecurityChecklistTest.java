@@ -108,6 +108,33 @@ public final class SecurityChecklistTest {
         check("2.1.8 locked account rejected even with correct password",
                 !sqlite.login(lockMe, chars(PASSWORD)).isSuccessful());
 
+        String lengthLock = "lenlock" + suffix;
+        createUser(lengthLock, 2);
+        sqlite.login(lengthLock, chars(""));
+        check("2.1.8 / 2.1.9 blank password counts and records the attempt",
+                failuresOf(lengthLock) == 1
+                && "FAILURE".equals(statusOf(lengthLock))
+                && logged("LOGIN_VALIDATION_FAILURE", lengthLock));
+        sqlite.login(lengthLock, chars(repeat("A", 129)));
+        sqlite.login(lengthLock, chars(""));
+        sqlite.login(lengthLock, chars(repeat("A", 129)));
+        check("2.1.8 four blank/over-long attempts do not lock yet",
+                roleOf(lengthLock) == 2 && failuresOf(lengthLock) == 4);
+        sqlite.login(lengthLock, chars(""));
+        check("2.1.8 fifth consecutive blank/over-long attempt locks (role 1)",
+                roleOf(lengthLock) == 1 && lockedOf(lengthLock) == 1
+                && logged("ACCOUNT_LOCKED", lengthLock));
+
+        String lastSeen = "lastseen" + suffix;
+        createUser(lastSeen, 2);
+        sqlite.login(lastSeen, chars(repeat("B", 129)));
+        LoginResult afterLong = sqlite.login(lastSeen, chars(PASSWORD));
+        check("2.1.9 over-long attempt is reported at the next login",
+                afterLong.isSuccessful()
+                && "FAILURE".equals(afterLong.getPreviousStatus())
+                && afterLong.getFailedAttemptsSinceLastLogin() == 1);
+        sqlite.logout();
+
         for (int i = 0; i < 3; i++) {
             sqlite.login(client, chars("Wrong#Pass4242"));
         }
@@ -259,6 +286,28 @@ public final class SecurityChecklistTest {
                         "1.00")));
         check("2.5.2 validation failures logged with timestamp",
                 logged("VALIDATION_FAILURE", staff));
+        String dupe = "Dupe" + suffix;
+        createProduct(dupe, 1, 1.0);
+        check("2.5.2 duplicate product name rejected and logged",
+                rejected(() -> sqlite.addProduct(dupe, "1", "1.00"))
+                && loggedDesc("VALIDATION_FAILURE", staff,
+                        "add-product (A product with that name"));
+        check("2.5.2 editing a missing product rejected and logged",
+                rejected(() -> sqlite.updateProduct("Gone" + suffix,
+                        "Gone" + suffix, "1", "1.00"))
+                && loggedDesc("VALIDATION_FAILURE", staff,
+                        "edit-product (Product no longer exists"));
+        check("2.5.2 deleting a missing product rejected and logged",
+                rejected(() -> sqlite.deleteProduct("Gone" + suffix))
+                && loggedDesc("VALIDATION_FAILURE", staff,
+                        "delete-product (Product no longer exists"));
+        sqlite.logout();
+        sqlite.login(admin, chars(PASSWORD));
+        check("2.5.2 duplicate username (admin add) rejected and logged",
+                rejected(() -> sqlite.addUser(client, chars(PASSWORD),
+                        chars(PASSWORD), 2))
+                && loggedDesc("VALIDATION_FAILURE", admin,
+                        "add-user (That username is already taken"));
         sqlite.logout();
         sqlite.login(manager, chars(PASSWORD));
         check("2.3.3 maximum lengths enforced (search, 64 max)",
@@ -435,6 +484,24 @@ public final class SecurityChecklistTest {
         String b = PasswordHasher.hash(chars(PASSWORD));
         return !a.equals(b) && a.startsWith("pbkdf2-sha256$600000$")
                 && PasswordHasher.verify(chars(PASSWORD), a);
+    }
+
+    private static int failuresOf(String name) {
+        return ((Number) single("SELECT failed_attempts FROM users "
+                + "WHERE username = ?", name)).intValue();
+    }
+
+    private static String statusOf(String name) {
+        return (String) single("SELECT last_login_status FROM users "
+                + "WHERE username = ?", name);
+    }
+
+    private static boolean loggedDesc(String event, String username,
+            String descPart) {
+        return single("SELECT timestamp FROM logs WHERE event = ? "
+                + "AND username = ? AND instr(desc, ?) > 0 "
+                + "AND timestamp IS NOT NULL LIMIT 1",
+                event, username, descPart) != null;
     }
 
     private static boolean logged(String event, String username) {

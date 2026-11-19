@@ -38,6 +38,8 @@ import java.util.List;
 public class SQLite {
 
     private static final int MAX_FAILED_ATTEMPTS = 5;
+    /** Stand-in verified when a login password has an invalid length. */
+    private static final char[] LENGTH_PLACEHOLDER = {'-'};
     private static final String ANONYMOUS = "<anonymous>";
     private static final String DENIED_MESSAGE =
             "You are not authorized to perform this action.";
@@ -320,23 +322,30 @@ public class SQLite {
     public synchronized LoginResult login(String username, char[] password) {
         logout();
 
-        boolean validName = Validation.validUsername(username);
-        if (!validName || !Validation.validCredentialLength(password)) {
-            recordSecurityEvent(
-                    "LOGIN_VALIDATION_FAILURE",
-                    validName ? username : "<invalid>",
-                    validName
-                            ? "Rejected login input: password length must "
-                            + "be 1-128 characters"
-                            : "Rejected login input: username must match "
-                            + "[A-Za-z0-9]{3,32}");
+        // A malformed username cannot name an account: reject and log it.
+        if (!Validation.validUsername(username)) {
+            recordSecurityEvent("LOGIN_VALIDATION_FAILURE", "<invalid>",
+                    "Rejected login input: username must match "
+                    + "[A-Za-z0-9]{3,32}");
             return LoginResult.failure();
         }
+        // A blank or over-long password is rejected (and logged) but, for an
+        // existing account, still counts as a failed attempt toward lockout
+        // and updates the last-attempt time and status. It is never hashed:
+        // a fixed placeholder keeps the timing the same without spending
+        // work on oversized input.
+        boolean lengthOk = Validation.validCredentialLength(password);
+        char[] checked = lengthOk ? password : LENGTH_PLACEHOLDER.clone();
 
         String timestamp = timestamp();
         try (Connection conn = connect()) {
             conn.setAutoCommit(false);
             try {
+                if (!lengthOk) {
+                    insertLog(conn, "LOGIN_VALIDATION_FAILURE", username,
+                            "Rejected login input: password length must "
+                            + "be 1-128 characters", timestamp);
+                }
                 int id;
                 String accountName;
                 String storedPassword;
@@ -356,7 +365,7 @@ public class SQLite {
                     try (ResultSet rs = statement.executeQuery()) {
                         if (!rs.next()) {
                             // Same work as a real check: no timing leak.
-                            verifyAgainstDummy(password);
+                            verifyAgainstDummy(checked);
                             insertLog(conn, "LOGIN_FAILURE", username,
                                     "Invalid credentials", timestamp);
                             conn.commit();
@@ -377,7 +386,7 @@ public class SQLite {
                 }
 
                 if (role < 2 || role > 5 || locked != 0) {
-                    verifyAgainstDummy(password);
+                    verifyAgainstDummy(checked);
                     updateLoginStatus(conn, id, timestamp, "BLOCKED");
                     insertLog(conn, "LOGIN_BLOCKED", accountName,
                             "Login rejected for a disabled or locked account",
@@ -387,7 +396,10 @@ public class SQLite {
                 }
 
                 boolean matches;
-                if (PasswordHasher.isHash(storedPassword)) {
+                if (!lengthOk) {
+                    verifyAgainstDummy(checked);
+                    matches = false;
+                } else if (PasswordHasher.isHash(storedPassword)) {
                     matches = PasswordHasher.verify(password, storedPassword);
                 } else {
                     // Fail closed: only salted hashes are ever accepted.
@@ -800,6 +812,22 @@ public class SQLite {
                 + " (" + ex.getMessage() + ")");
     }
 
+    /**
+     * A business-rule rejection found inside a transaction: undoes the
+     * transaction, records VALIDATION_FAILURE with a timestamp on the same
+     * connection, commits the log entry and returns the exception to throw.
+     */
+    private static ValidationException rejectInTransaction(Connection conn,
+            String username, String operation, String message)
+            throws SQLException {
+        conn.rollback();
+        insertLog(conn, "VALIDATION_FAILURE", username,
+                "Rejected input for operation: " + operation + " ("
+                + message + ")", timestamp());
+        conn.commit();
+        return new ValidationException(message);
+    }
+
     private AppException fatalException(String message, Throwable cause) {
         invalidateSession();
         Runnable handler = fatalErrorHandler;
@@ -851,8 +879,8 @@ public class SQLite {
             conn.setAutoCommit(false);
             try {
                 if (productExists(conn, name, null)) {
-                    conn.rollback();
-                    throw new ValidationException(
+                    throw rejectInTransaction(conn, user.username,
+                            "add-product",
                             "A product with that name already exists.");
                 }
                 try (PreparedStatement statement = conn.prepareStatement(
@@ -896,8 +924,8 @@ public class SQLite {
             conn.setAutoCommit(false);
             try {
                 if (productExists(conn, name, originalName)) {
-                    conn.rollback();
-                    throw new ValidationException(
+                    throw rejectInTransaction(conn, user.username,
+                            "edit-product",
                             "A product with that name already exists.");
                 }
                 try (PreparedStatement statement = conn.prepareStatement(
@@ -908,9 +936,8 @@ public class SQLite {
                     statement.setDouble(3, parsedPrice / 100.0);
                     statement.setString(4, originalName);
                     if (statement.executeUpdate() != 1) {
-                        conn.rollback();
-                        throw new ValidationException(
-                                "Product no longer exists.");
+                        throw rejectInTransaction(conn, user.username,
+                                "edit-product", "Product no longer exists.");
                     }
                 }
                 insertLog(conn, "PRODUCT_UPDATED", user.username,
@@ -950,8 +977,8 @@ public class SQLite {
                     }
                 }
                 if (productId < 0) {
-                    conn.rollback();
-                    throw new ValidationException("Product no longer exists.");
+                    throw rejectInTransaction(conn, user.username,
+                            "delete-product", "Product no longer exists.");
                 }
                 try (PreparedStatement findHistory = conn.prepareStatement(
                         "SELECT 1 FROM history WHERE product_id = ? "
@@ -1283,9 +1310,8 @@ public class SQLite {
             conn.setAutoCommit(false);
             try {
                 if (admin != null && findAccount(conn, username) != null) {
-                    conn.rollback();
-                    throw new ValidationException(
-                            "That username is already taken.");
+                    throw rejectInTransaction(conn, admin.username,
+                            "add-user", "That username is already taken.");
                 }
                 try (PreparedStatement statement = conn.prepareStatement(
                         "INSERT INTO users(username,password,role) "
@@ -1410,8 +1436,8 @@ public class SQLite {
                     return;
                 }
                 if (!locked && target.roleBeforeLock == null) {
-                    conn.rollback();
-                    throw new ValidationException(
+                    throw rejectInTransaction(conn, user.username,
+                            "unlock-user",
                             "The original role is not recorded. Use Edit "
                             + "Role to choose the account's role instead.");
                 }
@@ -1468,8 +1494,8 @@ public class SQLite {
             try {
                 Account target = findAccount(conn, username);
                 if (target == null) {
-                    conn.rollback();
-                    throw new ValidationException("User no longer exists.");
+                    throw rejectInTransaction(conn, user.username,
+                            "change-user-password", "User no longer exists.");
                 }
                 // An administrator may change their OWN password, but not
                 // another administrator's.
@@ -1561,8 +1587,8 @@ public class SQLite {
             throws SQLException {
         Account target = findAccount(conn, username);
         if (target == null) {
-            conn.rollback();
-            throw new ValidationException("User no longer exists.");
+            throw rejectInTransaction(conn, admin.username, "manage-user",
+                    "User no longer exists.");
         }
         if (target.id == admin.id || target.isAdministrator()) {
             insertLog(conn, rejectEvent, admin.username,
