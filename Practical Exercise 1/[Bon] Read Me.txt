@@ -1,9 +1,0 @@
-Corrected original diagram layout
-
-The original Bon diagram geometry, component positions, arrow connections and trust-boundary lines are restored. The classmate screenshot zone-box layout has been removed. Explanatory footers were removed and internal-step notes were shortened.
-
-The JSON retains Evan metadata and all 77 threat entries verbatim, including the three duplicate DoS entries previously identified.
-
-The PDF retains Evan original Threat Dragon report pages outside the diagram section. Four original Bon diagram export pages replace the original one-page diagram section, with note text shortened. It has 14 pages.
-
-Use the updated PDF and JSON plus the four PNG backups. The earlier original Bon files and the superseded layout were backed up. Nothing was uploaded or submitted.
