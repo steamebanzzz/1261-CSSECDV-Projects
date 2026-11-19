@@ -47,6 +47,7 @@ public class SQLite {
             "Administrator accounts can only be managed by the "
             + "super administrator.";
 
+    private final File databaseFile;
     private final String driverURL;
     private final String dummyHash;
     private volatile AuthenticatedUser session;
@@ -89,7 +90,9 @@ public class SQLite {
     }
 
     public SQLite() {
-        driverURL = "jdbc:sqlite:" + resolveDatabasePath();
+        databaseFile = resolveDatabaseFile();
+        driverURL = "jdbc:sqlite:" + databaseFile.getPath();
+        System.out.println("Using database: " + databaseFile.getPath());
         dummyHash = createDummyHash();
         initializeDatabase();
     }
@@ -99,26 +102,35 @@ public class SQLite {
     // ------------------------------------------------------------------
 
     /**
-     * Uses database.db from the working directory, or the one beside the
-     * JAR when the program is started from another directory.
+     * Picks ONE database file, independent of how the program is launched:
+     *  1. the path in the system property cssecdv.db, if set;
+     *  2. when running from a JAR: database.db beside the JAR, always
+     *     (the working directory is ignored, so "java -jar dist/CSSECDV.jar"
+     *     and double-clicking the JAR use the same file);
+     *  3. otherwise (NetBeans run, tests): database.db in the working
+     *     directory, i.e. the project folder.
      */
-    private static String resolveDatabasePath() {
-        File local = new File("database.db");
-        if (local.isFile()) {
-            return local.getPath();
+    private static File resolveDatabaseFile() {
+        String override = System.getProperty("cssecdv.db");
+        if (override != null && !override.trim().isEmpty()) {
+            return new File(override.trim()).getAbsoluteFile();
         }
         try {
             File code = new File(SQLite.class.getProtectionDomain()
                     .getCodeSource().getLocation().toURI());
-            File directory = code.isFile() ? code.getParentFile() : code;
-            File besideJar = new File(directory, "database.db");
-            if (besideJar.isFile()) {
-                return besideJar.getAbsolutePath();
+            if (code.isFile()) {
+                return new File(code.getParentFile(), "database.db")
+                        .getAbsoluteFile();
             }
         } catch (Exception ex) {
-            // Fall back to the working directory.
+            // Location unknown: fall back to the working directory.
         }
-        return "database.db";
+        return new File("database.db").getAbsoluteFile();
+    }
+
+    /** Absolute path of the database file this instance uses. */
+    public String getDatabasePath() {
+        return databaseFile.getPath();
     }
 
     /** Hash of a random secret, used to equalize login timing. */

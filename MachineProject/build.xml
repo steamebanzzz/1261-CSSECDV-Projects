@@ -73,8 +73,14 @@
 
     <!-- Deliverable: dist/ must run on its own, so ship the database
          (seeded demo accounts, hashed passwords) beside the JAR. "Clean and
-         Build" deletes dist/, and this copies database.db back afterwards. -->
+         Build" deletes dist/, and this copies database.db back afterwards.
+         A plain Build keeps an existing dist/database.db, so test data
+         added while running the JAR is not wiped. -->
     <target name="-post-jar">
-        <copy file="database.db" todir="${dist.dir}" overwrite="true"/>
+        <available file="${dist.dir}/database.db" property="dist.db.exists"/>
+        <antcall target="-copy-dist-db"/>
+    </target>
+    <target name="-copy-dist-db" unless="dist.db.exists">
+        <copy file="database.db" todir="${dist.dir}"/>
     </target>
 </project>

@@ -233,10 +233,15 @@ public class Frame extends javax.swing.JFrame {
 
     public void init(Main controller){
         this.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
-        this.setTitle("CSSECDV - SECURITY Svcs");
+        this.main = controller;
+        // Shows which database file is in use (folder + file name only).
+        java.io.File db = new java.io.File(main.sqlite.getDatabasePath());
+        String dbFolder = db.getParentFile() == null
+                ? "" : db.getParentFile().getName() + "/";
+        this.setTitle("CSSECDV - SECURITY Svcs  [DB: " + dbFolder
+                + db.getName() + "]");
         this.setLocationRelativeTo(null);
 
-        this.main = controller;
         UiGuard.install(this);
         main.sqlite.setFatalErrorHandler(
                 () -> SwingUtilities.invokeLater(this::handleFatalError));
